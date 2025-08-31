@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "rust-docs-mcp": {
+      "type": "stdio",
+      "command": "/Users/orainford/.local/bin/rust-docs-mcp",
+      "args": [],
+      "env": {}
+    },
+    "cargo-mcp": {
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/cargo-mcp",
+      "args": ["serve"],
+      "env": {}
+    }
+  }
+}

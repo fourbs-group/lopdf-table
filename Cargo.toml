@@ -1,0 +1,18 @@
+[package]
+name = "lopdf-table"
+version = "0.1.0"
+edition = "2024"
+authors = ["Your Name"]
+license = "MIT"
+description = "A composable table drawing library for PDFs built on lopdf"
+repository = "https://github.com/yourusername/lopdf-table"
+keywords = ["pdf", "table", "lopdf", "document", "generation"]
+categories = ["graphics", "text-processing"]
+
+[dependencies]
+lopdf = "0.38"
+tracing = "0.1"
+thiserror = "1.0"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
