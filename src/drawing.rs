@@ -172,44 +172,40 @@ fn draw_table_borders(table: &Table, layout: &TableLayout, position: (f32, f32))
         current_y -= height;
     }
 
-    // Build a map of which columns need vertical borders
-    // A column needs a border if it's not within a spanned cell for all rows
-    let mut column_needs_border = vec![true; layout.column_widths.len()];
-
-    // Check each row to see which columns are within spanned cells
-    for row in &table.rows {
+    // Draw vertical lines between columns (skip lines within spanned cells)
+    for (row_idx, row) in table.rows.iter().enumerate() {
+        let mut current_x = start_x;
         let mut col_idx = 0;
+        let row_y_top = start_y - layout.row_heights.iter().take(row_idx).sum::<f32>();
+        let row_y_bottom = row_y_top - layout.row_heights[row_idx];
+
         for cell in &row.cells {
             if col_idx >= layout.column_widths.len() {
                 break;
             }
 
-            // Mark columns within the span (except the first) as not needing borders
-            if cell.colspan > 1 {
-                for span_offset in 1..cell.colspan.min(layout.column_widths.len() - col_idx) {
-                    column_needs_border[col_idx + span_offset] = false;
-                }
+            // Draw vertical line at the start of this cell (if not first column)
+            if col_idx > 0 {
+                operations.extend(vec![
+                    Object::Name(b"m".to_vec()),
+                    current_x.into(),
+                    row_y_top.into(),
+                    Object::Name(b"l".to_vec()),
+                    current_x.into(),
+                    row_y_bottom.into(),
+                    Object::Name(b"S".to_vec()),
+                ]);
             }
 
-            col_idx += cell.colspan.max(1);
+            // Move across the span of this cell
+            let cell_span = cell.colspan.max(1);
+            for span_idx in 0..cell_span {
+                if col_idx + span_idx < layout.column_widths.len() {
+                    current_x += layout.column_widths[col_idx + span_idx];
+                }
+            }
+            col_idx += cell_span;
         }
-    }
-
-    // Draw vertical lines between columns (only where needed)
-    let mut current_x = start_x;
-    for (i, width) in layout.column_widths.iter().enumerate() {
-        if i > 0 && column_needs_border[i] {
-            operations.extend(vec![
-                Object::Name(b"m".to_vec()),
-                current_x.into(),
-                start_y.into(),
-                Object::Name(b"l".to_vec()),
-                current_x.into(),
-                (start_y - layout.total_height).into(),
-                Object::Name(b"S".to_vec()),
-            ]);
-        }
-        current_x += width;
     }
 
     operations
@@ -819,46 +815,50 @@ fn draw_subset_borders(
         current_y -= layout.row_heights[row_idx];
     }
 
-    // Build a map of which columns need vertical borders based on the rows in this subset
-    let mut column_needs_border = vec![true; layout.column_widths.len()];
+    // Draw vertical lines between columns (skip lines within spanned cells)
+    for (idx, &row_idx) in row_indices.iter().enumerate() {
+        if row_idx >= table.rows.len() {
+            continue;
+        }
 
-    // Check each row in this subset to see which columns are within spanned cells
-    for &row_idx in row_indices {
-        if row_idx < table.rows.len() {
-            let row = &table.rows[row_idx];
-            let mut col_idx = 0;
-            for cell in &row.cells {
-                if col_idx >= layout.column_widths.len() {
-                    break;
-                }
+        let row = &table.rows[row_idx];
+        let mut current_x = start_x;
+        let mut col_idx = 0;
+        let row_y_top = start_y
+            - row_indices
+                .iter()
+                .take(idx)
+                .map(|&i| layout.row_heights[i])
+                .sum::<f32>();
+        let row_y_bottom = row_y_top - layout.row_heights[row_idx];
 
-                // Mark columns within the span (except the first) as not needing borders
-                if cell.colspan > 1 {
-                    for span_offset in 1..cell.colspan.min(layout.column_widths.len() - col_idx) {
-                        column_needs_border[col_idx + span_offset] = false;
-                    }
-                }
-
-                col_idx += cell.colspan.max(1);
+        for cell in &row.cells {
+            if col_idx >= layout.column_widths.len() {
+                break;
             }
-        }
-    }
 
-    // Draw vertical lines between columns (only where needed)
-    let mut current_x = start_x;
-    for (i, width) in layout.column_widths.iter().enumerate() {
-        if i > 0 && column_needs_border[i] {
-            operations.extend(vec![
-                Object::Name(b"m".to_vec()),
-                current_x.into(),
-                start_y.into(),
-                Object::Name(b"l".to_vec()),
-                current_x.into(),
-                (start_y - subset_height).into(),
-                Object::Name(b"S".to_vec()),
-            ]);
+            // Draw vertical line at the start of this cell (if not first column)
+            if col_idx > 0 {
+                operations.extend(vec![
+                    Object::Name(b"m".to_vec()),
+                    current_x.into(),
+                    row_y_top.into(),
+                    Object::Name(b"l".to_vec()),
+                    current_x.into(),
+                    row_y_bottom.into(),
+                    Object::Name(b"S".to_vec()),
+                ]);
+            }
+
+            // Move across the span of this cell
+            let cell_span = cell.colspan.max(1);
+            for span_idx in 0..cell_span {
+                if col_idx + span_idx < layout.column_widths.len() {
+                    current_x += layout.column_widths[col_idx + span_idx];
+                }
+            }
+            col_idx += cell_span;
         }
-        current_x += width;
     }
 
     operations
