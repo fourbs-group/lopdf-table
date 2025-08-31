@@ -1,7 +1,7 @@
 //! Basic table example
 
 use lopdf::{Document, Object, dictionary};
-use lopdf_table::{Cell, Row, Table, TableDrawing};
+use lopdf_table::{Cell, ColumnWidth, Row, Table, TableDrawing};
 use tracing_subscriber;
 use tracing_subscriber::EnvFilter;
 
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     doc.trailer.set("Root", catalog_id);
 
-    // Create a simple table
+    // Create a simple table with mixed column width specifications
     let table = Table::new()
         .add_row(Row::new(vec![
             Cell::new("Product").bold(),
@@ -100,6 +100,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Cell::new("").bold(),
             Cell::new("$145.00").bold(),
         ]))
+        .with_column_widths(vec![
+            ColumnWidth::Percentage(40.0), // Product takes 40% of table width
+            ColumnWidth::Auto,             // Quantity auto-sized based on content
+            ColumnWidth::Pixels(80.0),     // Price fixed at 80 pixels
+            ColumnWidth::Pixels(80.0),     // Total fixed at 80 pixels
+        ])
+        .with_total_width(500.0) // Total table width of 500 points
         .with_border(1.0);
 
     // Draw the table on the page

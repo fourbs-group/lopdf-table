@@ -4,13 +4,26 @@ use crate::Result;
 use crate::style::{CellStyle, RowStyle, TableStyle};
 use tracing::trace;
 
+/// Column width specification
+#[derive(Debug, Clone)]
+pub enum ColumnWidth {
+    /// Fixed width in points
+    Pixels(f32),
+    /// Percentage of available table width
+    Percentage(f32),
+    /// Automatically calculate based on content
+    Auto,
+}
+
 /// Represents a table with rows and styling
 #[derive(Debug, Clone)]
 pub struct Table {
     pub rows: Vec<Row>,
     pub style: TableStyle,
-    /// Explicit column widths (if None, auto-calculate)
-    pub column_widths: Option<Vec<f32>>,
+    /// Column width specifications
+    pub column_widths: Option<Vec<ColumnWidth>>,
+    /// Total table width (if None, auto-calculate based on content)
+    pub total_width: Option<f32>,
 }
 
 impl Table {
@@ -20,6 +33,7 @@ impl Table {
             rows: Vec::new(),
             style: TableStyle::default(),
             column_widths: None,
+            total_width: None,
         }
     }
 
@@ -36,9 +50,21 @@ impl Table {
         self
     }
 
-    /// Set explicit column widths
-    pub fn with_column_widths(mut self, widths: Vec<f32>) -> Self {
+    /// Set column width specifications
+    pub fn with_column_widths(mut self, widths: Vec<ColumnWidth>) -> Self {
         self.column_widths = Some(widths);
+        self
+    }
+
+    /// Set total table width
+    pub fn with_total_width(mut self, width: f32) -> Self {
+        self.total_width = Some(width);
+        self
+    }
+
+    /// Convenience method to set pixel widths for all columns
+    pub fn with_pixel_widths(mut self, widths: Vec<f32>) -> Self {
+        self.column_widths = Some(widths.into_iter().map(ColumnWidth::Pixels).collect());
         self
     }
 
@@ -79,6 +105,22 @@ impl Table {
                     "Column widths array has {} elements, but table has {} columns",
                     widths.len(),
                     expected_cols
+                )));
+            }
+
+            // Check that percentage widths don't exceed 100%
+            let total_percentage: f32 = widths
+                .iter()
+                .filter_map(|w| match w {
+                    ColumnWidth::Percentage(p) => Some(*p),
+                    _ => None,
+                })
+                .sum();
+
+            if total_percentage > 100.0 {
+                return Err(crate::error::TableError::InvalidTable(format!(
+                    "Total percentage widths ({:.1}%) exceed 100%",
+                    total_percentage
                 )));
             }
         }
@@ -132,6 +174,8 @@ pub struct Cell {
     pub style: Option<CellStyle>,
     pub colspan: usize,
     pub rowspan: usize,
+    /// Enable text wrapping for this cell
+    pub text_wrap: bool,
 }
 
 impl Cell {
@@ -142,12 +186,19 @@ impl Cell {
             style: None,
             colspan: 1,
             rowspan: 1,
+            text_wrap: false,
         }
     }
 
     /// Create an empty cell
     pub fn empty() -> Self {
         Self::new("")
+    }
+
+    /// Enable text wrapping for this cell
+    pub fn with_wrap(mut self, wrap: bool) -> Self {
+        self.text_wrap = wrap;
+        self
     }
 
     /// Set cell style

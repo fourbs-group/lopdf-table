@@ -2,7 +2,7 @@
 
 use lopdf::{Document, Object, dictionary};
 use lopdf_table::{
-    Alignment, Cell, CellStyle, Color, Row, RowStyle, Table, TableDrawing, TableStyle,
+    Alignment, Cell, CellStyle, Color, ColumnWidth, Row, RowStyle, Table, TableDrawing, TableStyle,
 };
 use tracing_subscriber;
 use tracing_subscriber::EnvFilter;
@@ -157,29 +157,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             }),
         ]))
-        .with_column_widths(vec![120.0, 100.0, 120.0, 80.0]);
+        .with_pixel_widths(vec![120.0, 100.0, 120.0, 80.0]);
 
     // Draw the table on the page
     doc.draw_table(page_id, table, (50.0, 750.0))?;
 
-    // Create a second table with different styling
+    // Create a second table demonstrating text wrapping
     let summary_table = Table::new()
         .add_row(Row::new(vec![
             Cell::new("Department").bold(),
-            Cell::new("Summary").bold(),
+            Cell::new("Description").bold(),
         ]))
         .add_row(Row::new(vec![
             Cell::new("Engineering"),
-            Cell::new("2 employees"),
+            Cell::new("The Engineering department focuses on product development, software architecture, and maintaining our technical infrastructure. This team works on both frontend and backend systems.").with_wrap(true),
         ]))
         .add_row(Row::new(vec![
             Cell::new("Marketing"),
-            Cell::new("1 employee"),
+            Cell::new("Marketing drives brand awareness and customer acquisition through various channels including digital marketing, content creation, and strategic partnerships.").with_wrap(true),
         ]))
-        .add_row(Row::new(vec![Cell::new("Sales"), Cell::new("1 employee")]))
-        .add_row(Row::new(vec![Cell::new("HR"), Cell::new("1 employee")]))
+        .add_row(Row::new(vec![
+            Cell::new("Sales"),
+            Cell::new("Sales team manages client relationships and drives revenue growth through direct sales and account management.").with_wrap(true),
+        ]))
+        .add_row(Row::new(vec![
+            Cell::new("HR"),
+            Cell::new("Human Resources handles recruitment, employee relations, benefits administration, and organizational development.").with_wrap(true),
+        ]))
         .with_border(1.0)
-        .with_column_widths(vec![100.0, 100.0]);
+        .with_column_widths(vec![
+            ColumnWidth::Pixels(100.0),       // Department column fixed width
+            ColumnWidth::Percentage(60.0),    // Description takes 60% of remaining width
+        ])
+        .with_total_width(400.0);
 
     // Draw the second table below the first
     doc.draw_table(page_id, summary_table, (50.0, 450.0))?;

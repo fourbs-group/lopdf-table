@@ -2,7 +2,7 @@
 
 use crate::Result;
 use crate::error::TableError;
-use crate::table::Table;
+use crate::table::{ColumnWidth, Table};
 use tracing::{debug, trace};
 
 /// Calculated layout information for a table
@@ -23,14 +23,20 @@ pub fn calculate_layout(table: &Table) -> Result<TableLayout> {
         table.rows.len()
     );
 
-    // Calculate column widths
-    let column_widths = if let Some(ref widths) = table.column_widths {
-        widths.clone()
+    // Determine the available table width
+    let available_width = table.total_width.unwrap_or_else(|| {
+        // If no total width specified, calculate based on content
+        estimate_total_width(table)
+    });
+
+    // Calculate column widths based on specifications
+    let column_widths = if let Some(ref width_specs) = table.column_widths {
+        resolve_column_widths(width_specs, available_width, table)?
     } else {
         calculate_column_widths(table)?
     };
 
-    // Calculate row heights
+    // Calculate row heights (considering text wrapping if enabled)
     let row_heights = calculate_row_heights(table, &column_widths)?;
 
     // Calculate totals
@@ -45,6 +51,111 @@ pub fn calculate_layout(table: &Table) -> Result<TableLayout> {
         total_width,
         total_height,
     })
+}
+
+/// Estimate total table width based on content
+fn estimate_total_width(_table: &Table) -> f32 {
+    // Default to a reasonable page width minus margins
+    // Standard US Letter is 612 points wide, leave 50 points margin on each side
+    512.0
+}
+
+/// Resolve column widths from specifications
+fn resolve_column_widths(
+    specs: &[ColumnWidth],
+    available_width: f32,
+    table: &Table,
+) -> Result<Vec<f32>> {
+    let mut resolved_widths = vec![0.0; specs.len()];
+    let mut total_fixed_width = 0.0;
+    let mut total_percentage = 0.0;
+    let mut auto_columns = Vec::new();
+
+    // First pass: calculate fixed widths and percentages
+    for (i, spec) in specs.iter().enumerate() {
+        match spec {
+            ColumnWidth::Pixels(width) => {
+                resolved_widths[i] = *width;
+                total_fixed_width += width;
+            }
+            ColumnWidth::Percentage(percent) => {
+                total_percentage += percent;
+            }
+            ColumnWidth::Auto => {
+                auto_columns.push(i);
+            }
+        }
+    }
+
+    // Calculate remaining width for auto columns
+    let percentage_width = available_width * (total_percentage / 100.0);
+    let remaining_width = available_width - total_fixed_width - percentage_width;
+
+    // Second pass: resolve percentage widths
+    for (i, spec) in specs.iter().enumerate() {
+        if let ColumnWidth::Percentage(percent) = spec {
+            resolved_widths[i] = available_width * (percent / 100.0);
+        }
+    }
+
+    // Third pass: distribute remaining width among auto columns
+    if !auto_columns.is_empty() {
+        if remaining_width > 0.0 {
+            // Calculate content-based proportions for auto columns
+            let mut auto_proportions = vec![0.0; auto_columns.len()];
+            let mut total_proportion = 0.0;
+
+            for (idx, &col) in auto_columns.iter().enumerate() {
+                // Estimate width based on content
+                let max_content_width = estimate_column_content_width(table, col);
+                auto_proportions[idx] = max_content_width;
+                total_proportion += max_content_width;
+            }
+
+            // Distribute remaining width proportionally
+            for (idx, &col) in auto_columns.iter().enumerate() {
+                if total_proportion > 0.0 {
+                    resolved_widths[col] =
+                        remaining_width * (auto_proportions[idx] / total_proportion);
+                } else {
+                    resolved_widths[col] = remaining_width / auto_columns.len() as f32;
+                }
+                // Ensure minimum width
+                resolved_widths[col] = resolved_widths[col].max(20.0);
+            }
+        } else {
+            // If no remaining width, give auto columns a minimum width
+            for &col in &auto_columns {
+                resolved_widths[col] = 20.0;
+            }
+        }
+    }
+
+    trace!("Resolved column widths: {:?}", resolved_widths);
+    Ok(resolved_widths)
+}
+
+/// Estimate content width for a specific column
+fn estimate_column_content_width(table: &Table, col_idx: usize) -> f32 {
+    let mut max_width = 0.0;
+
+    for row in &table.rows {
+        if col_idx < row.cells.len() {
+            let cell = &row.cells[col_idx];
+            let font_size = cell
+                .style
+                .as_ref()
+                .and_then(|s| s.font_size)
+                .unwrap_or(table.style.default_font_size);
+
+            let estimated_width = estimate_text_width(&cell.content, font_size);
+            max_width = f32::max(max_width, estimated_width);
+        }
+    }
+
+    // Add padding
+    let padding = table.style.padding.left + table.style.padding.right;
+    max_width + padding
 }
 
 /// Calculate automatic column widths based on content
@@ -111,12 +222,23 @@ fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32
                     .and_then(|s| s.font_size)
                     .unwrap_or(table.style.default_font_size);
 
-                // Estimate height based on text wrapping
+                // Calculate available width for text
                 let available_width =
                     column_widths[i] - table.style.padding.left - table.style.padding.right;
 
-                let estimated_height =
-                    estimate_text_height(&cell.content, available_width, font_size);
+                // Calculate height based on whether text wrapping is enabled
+                let estimated_height = if cell.text_wrap {
+                    // Use the text wrapping function to get actual wrapped height
+                    crate::text::calculate_wrapped_text_height(
+                        &cell.content,
+                        available_width,
+                        font_size,
+                        1.2, // Line spacing factor
+                    )
+                } else {
+                    // Single line height
+                    font_size_to_height(font_size)
+                };
 
                 max_height = f32::max(max_height, estimated_height);
             }
@@ -139,18 +261,6 @@ fn estimate_text_width(text: &str, font_size: f32) -> f32 {
     // Simplified estimation: average character width is ~0.5 of font size
     let char_count = text.chars().count() as f32;
     char_count * font_size * 0.5
-}
-
-/// Estimate text height based on wrapping
-fn estimate_text_height(text: &str, available_width: f32, font_size: f32) -> f32 {
-    if text.is_empty() {
-        return font_size_to_height(font_size);
-    }
-
-    let text_width = estimate_text_width(text, font_size);
-    let lines = (text_width / available_width).ceil().max(1.0);
-
-    lines * font_size_to_height(font_size)
 }
 
 /// Convert font size to line height

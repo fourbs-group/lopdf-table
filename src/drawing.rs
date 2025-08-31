@@ -225,22 +225,25 @@ fn draw_cell_text_operations(
         .and_then(|s| s.padding.as_ref())
         .unwrap_or(&table.style.padding);
 
-    // Estimate text width for alignment
-    // This is a simplified estimation - real implementation would use font metrics
-    let estimated_text_width = cell.content.len() as f32 * font_size * 0.5;
+    // Calculate available width for text
+    let available_width = width - padding.left - padding.right;
 
-    let text_x = match alignment {
-        Alignment::Left => x + padding.left,
-        Alignment::Center => x + width / 2.0 - estimated_text_width / 2.0,
-        Alignment::Right => x + width - padding.right - estimated_text_width,
+    // Wrap text if enabled
+    let lines = if cell.text_wrap {
+        crate::text::wrap_text(&cell.content, available_width, font_size)
+    } else {
+        vec![cell.content.clone()]
     };
 
-    // PDF text positioning uses baseline, not top of text
-    // For better vertical centering, we need to account for descenders
-    let text_y = match v_alignment {
+    // Calculate line height
+    let line_height = font_size * 1.2;
+    let total_text_height = lines.len() as f32 * line_height;
+
+    // Calculate starting Y position based on vertical alignment
+    let start_y = match v_alignment {
         VerticalAlignment::Top => y - padding.top - font_size,
-        VerticalAlignment::Middle => y - height / 2.0 - font_size * 0.35, // Slightly below center for visual balance
-        VerticalAlignment::Bottom => y - height + padding.bottom + font_size * 0.2,
+        VerticalAlignment::Middle => y - height / 2.0 + total_text_height / 2.0 - font_size,
+        VerticalAlignment::Bottom => y - height + padding.bottom + total_text_height - font_size,
     };
 
     // Begin text object
@@ -271,14 +274,54 @@ fn draw_cell_text_operations(
         ],
     ));
 
-    // Position text
-    operations.push(Operation::new("Td", vec![text_x.into(), text_y.into()]));
+    // Position to the first line
+    let first_line_y = start_y;
 
-    // Show text
-    operations.push(Operation::new(
-        "Tj",
-        vec![Object::string_literal(cell.content.clone())],
-    ));
+    // Draw each line of text
+    for (line_idx, line) in lines.iter().enumerate() {
+        // Estimate text width for alignment
+        let estimated_text_width = line.len() as f32 * font_size * 0.5;
+
+        let text_x = match alignment {
+            Alignment::Left => x + padding.left,
+            Alignment::Center => x + width / 2.0 - estimated_text_width / 2.0,
+            Alignment::Right => x + width - padding.right - estimated_text_width,
+        };
+
+        let text_y = first_line_y - (line_idx as f32 * line_height);
+
+        if line_idx == 0 {
+            // First line: use absolute positioning
+            operations.push(Operation::new("Td", vec![text_x.into(), text_y.into()]));
+        } else {
+            // Subsequent lines: move to new position
+            // We need to move from the previous line's position
+            let prev_x = match alignment {
+                Alignment::Left => x + padding.left,
+                Alignment::Center => {
+                    let prev_line = &lines[line_idx - 1];
+                    let prev_width = prev_line.len() as f32 * font_size * 0.5;
+                    x + width / 2.0 - prev_width / 2.0
+                }
+                Alignment::Right => {
+                    let prev_line = &lines[line_idx - 1];
+                    let prev_width = prev_line.len() as f32 * font_size * 0.5;
+                    x + width - padding.right - prev_width
+                }
+            };
+
+            // Calculate relative movement from previous position
+            let dx = text_x - prev_x;
+            let dy = -line_height;
+            operations.push(Operation::new("Td", vec![dx.into(), dy.into()]));
+        }
+
+        // Show text
+        operations.push(Operation::new(
+            "Tj",
+            vec![Object::string_literal(line.clone())],
+        ));
+    }
 
     // End text object
     operations.push(Operation::new("ET", vec![]));

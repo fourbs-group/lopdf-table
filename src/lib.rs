@@ -11,10 +11,11 @@ pub mod error;
 pub mod layout;
 pub mod style;
 pub mod table;
+mod text;
 
 pub use error::{Result, TableError};
 pub use style::{Alignment, BorderStyle, CellStyle, Color, RowStyle, TableStyle};
-pub use table::{Cell, Row, Table};
+pub use table::{Cell, ColumnWidth, Row, Table};
 
 /// Extension trait for lopdf::Document to add table drawing capabilities
 pub trait TableDrawing {
