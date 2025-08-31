@@ -24,6 +24,8 @@ pub struct Table {
     pub column_widths: Option<Vec<ColumnWidth>>,
     /// Total table width (if None, auto-calculate based on content)
     pub total_width: Option<f32>,
+    /// Number of header rows to repeat on each page when paginating
+    pub header_rows: usize,
 }
 
 impl Table {
@@ -34,6 +36,7 @@ impl Table {
             style: TableStyle::default(),
             column_widths: None,
             total_width: None,
+            header_rows: 0,
         }
     }
 
@@ -71,6 +74,12 @@ impl Table {
     /// Set border width for the entire table
     pub fn with_border(mut self, width: f32) -> Self {
         self.style.border_width = width;
+        self
+    }
+
+    /// Set the number of header rows to repeat on each page
+    pub fn with_header_rows(mut self, count: usize) -> Self {
+        self.header_rows = count;
         self
     }
 

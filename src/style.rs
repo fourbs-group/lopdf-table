@@ -137,6 +137,14 @@ pub struct TableStyle {
     /// Default font for the table
     pub font_name: String,
     pub default_font_size: f32,
+    /// Page height for pagination (if None, uses standard A4: 842 points)
+    pub page_height: Option<f32>,
+    /// Top margin for pages
+    pub top_margin: f32,
+    /// Bottom margin for pages
+    pub bottom_margin: f32,
+    /// Whether to repeat header rows on new pages
+    pub repeat_headers: bool,
 }
 
 impl Default for TableStyle {
@@ -149,6 +157,10 @@ impl Default for TableStyle {
             padding: Padding::default(),
             font_name: "Helvetica".to_string(),
             default_font_size: 10.0,
+            page_height: None, // Will default to A4 (842 points)
+            top_margin: 50.0,
+            bottom_margin: 50.0,
+            repeat_headers: true,
         }
     }
 }

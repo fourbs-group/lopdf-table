@@ -14,8 +14,21 @@ pub mod table;
 mod text;
 
 pub use error::{Result, TableError};
-pub use style::{Alignment, BorderStyle, CellStyle, Color, RowStyle, TableStyle};
+pub use style::{
+    Alignment, BorderStyle, CellStyle, Color, RowStyle, TableStyle, VerticalAlignment,
+};
 pub use table::{Cell, ColumnWidth, Row, Table};
+
+/// Result of drawing a paginated table
+#[derive(Debug, Clone)]
+pub struct PagedTableResult {
+    /// Page IDs where table parts were drawn
+    pub page_ids: Vec<ObjectId>,
+    /// Total number of pages used
+    pub total_pages: usize,
+    /// Final position after drawing (x, y on last page)
+    pub final_position: (f32, f32),
+}
 
 /// Extension trait for lopdf::Document to add table drawing capabilities
 pub trait TableDrawing {
@@ -39,6 +52,26 @@ pub trait TableDrawing {
     ///
     /// Useful for custom positioning or combining with other content
     fn create_table_content(&self, table: &Table, position: (f32, f32)) -> Result<Vec<Object>>;
+
+    /// Draw a table with automatic page wrapping
+    ///
+    /// This method will automatically create new pages as needed when the table
+    /// exceeds the available space on the current page. Header rows will be
+    /// repeated on each new page if configured.
+    ///
+    /// # Arguments
+    /// * `page_id` - The object ID of the starting page
+    /// * `table` - The table to draw
+    /// * `position` - The (x, y) position of the table's top-left corner
+    ///
+    /// # Returns
+    /// Returns a PagedTableResult with information about pages used
+    fn draw_table_with_pagination(
+        &mut self,
+        page_id: ObjectId,
+        table: Table,
+        position: (f32, f32),
+    ) -> Result<PagedTableResult>;
 }
 
 impl TableDrawing for Document {
@@ -69,6 +102,25 @@ impl TableDrawing for Document {
     fn create_table_content(&self, table: &Table, position: (f32, f32)) -> Result<Vec<Object>> {
         let layout = layout::calculate_layout(table)?;
         drawing::generate_table_operations(table, &layout, position)
+    }
+
+    #[instrument(skip(self, table), fields(table_rows = table.rows.len()))]
+    fn draw_table_with_pagination(
+        &mut self,
+        page_id: ObjectId,
+        table: Table,
+        position: (f32, f32),
+    ) -> Result<PagedTableResult> {
+        debug!("Drawing paginated table at position {:?}", position);
+
+        // Calculate layout
+        let layout = layout::calculate_layout(&table)?;
+        trace!("Calculated layout: {:?}", layout);
+
+        // Generate paginated drawing operations
+        let result = drawing::draw_table_paginated(self, page_id, &table, &layout, position)?;
+
+        Ok(result)
     }
 }
 

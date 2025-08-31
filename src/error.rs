@@ -35,4 +35,8 @@ pub enum TableError {
     /// Page not found
     #[error("Page with ID {0:?} not found")]
     PageNotFound(lopdf::ObjectId),
+
+    /// Drawing operation error
+    #[error("Drawing operation failed: {0}")]
+    DrawingError(String),
 }

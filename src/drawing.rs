@@ -1,5 +1,6 @@
 //! PDF drawing operations for tables
 
+use crate::PagedTableResult;
 use crate::Result;
 use crate::layout::TableLayout;
 use crate::style::{Alignment, BorderStyle, Color, VerticalAlignment};
@@ -7,6 +8,7 @@ use crate::table::Table;
 use lopdf::{
     Document, Object, ObjectId,
     content::{Content, Operation},
+    dictionary,
 };
 use tracing::{debug, trace};
 
@@ -458,4 +460,338 @@ pub fn add_operations_to_page(
     doc.add_page_contents(page_id, content_bytes)?;
 
     Ok(())
+}
+
+/// Draw a table with pagination support
+pub fn draw_table_paginated(
+    doc: &mut Document,
+    start_page_id: ObjectId,
+    table: &Table,
+    layout: &TableLayout,
+    position: (f32, f32),
+) -> Result<PagedTableResult> {
+    debug!(
+        "Drawing paginated table with {} rows, {} header rows",
+        table.rows.len(),
+        table.header_rows
+    );
+
+    // Get page dimensions
+    let page_height = table.style.page_height.unwrap_or(842.0); // A4 default
+    let top_margin = table.style.top_margin;
+    let bottom_margin = table.style.bottom_margin;
+
+    let (start_x, start_y) = position;
+    let _available_height = start_y - bottom_margin;
+
+    // Track pages used
+    let mut page_ids = vec![start_page_id];
+    let mut current_page_id = start_page_id;
+    let mut current_y = start_y;
+    let mut rows_on_current_page = Vec::new();
+
+    // Process all rows
+    let mut row_idx = 0;
+    while row_idx < table.rows.len() {
+        let row_height = layout.row_heights[row_idx];
+
+        // Check if this row fits on the current page
+        if current_y - row_height < bottom_margin && !rows_on_current_page.is_empty() {
+            // Draw rows accumulated for current page
+            draw_rows_subset(
+                doc,
+                current_page_id,
+                table,
+                layout,
+                &rows_on_current_page,
+                (
+                    start_x,
+                    if rows_on_current_page[0] < table.header_rows {
+                        start_y
+                    } else {
+                        page_height - top_margin
+                    },
+                ),
+            )?;
+
+            // Create new page
+            current_page_id = create_new_page(doc, current_page_id)?;
+            page_ids.push(current_page_id);
+
+            // Reset position for new page
+            current_y = page_height - top_margin;
+            rows_on_current_page.clear();
+
+            // Add header rows to new page if configured
+            if table.style.repeat_headers && table.header_rows > 0 && row_idx >= table.header_rows {
+                for header_idx in 0..table.header_rows {
+                    rows_on_current_page.push(header_idx);
+                    current_y -= layout.row_heights[header_idx];
+                }
+            }
+        }
+
+        // Add current row to page
+        rows_on_current_page.push(row_idx);
+        current_y -= row_height;
+        row_idx += 1;
+    }
+
+    // Draw remaining rows on last page
+    if !rows_on_current_page.is_empty() {
+        let page_y = if page_ids.len() == 1 {
+            start_y
+        } else {
+            page_height - top_margin
+        };
+
+        draw_rows_subset(
+            doc,
+            current_page_id,
+            table,
+            layout,
+            &rows_on_current_page,
+            (start_x, page_y),
+        )?;
+    }
+
+    Ok(PagedTableResult {
+        total_pages: page_ids.len(),
+        page_ids,
+        final_position: (start_x, current_y),
+    })
+}
+
+/// Create a new page with the same configuration as the source page
+fn create_new_page(doc: &mut Document, source_page_id: ObjectId) -> Result<ObjectId> {
+    debug!("Creating new page for table continuation");
+
+    // Get the parent Pages object from the source page
+    let pages_id = if let Ok(Object::Dictionary(page_dict)) = doc.get_object(source_page_id) {
+        if let Ok(Object::Reference(pages_ref)) = page_dict.get(b"Parent") {
+            *pages_ref
+        } else {
+            return Err(crate::error::TableError::DrawingError(
+                "Could not find parent Pages object".to_string(),
+            ));
+        }
+    } else {
+        return Err(crate::error::TableError::DrawingError(
+            "Invalid page object".to_string(),
+        ));
+    };
+
+    // Get MediaBox and Resources from source page
+    let (media_box, resources_id) =
+        if let Ok(Object::Dictionary(page_dict)) = doc.get_object(source_page_id) {
+            let media_box = page_dict.get(b"MediaBox").ok().cloned();
+            let resources = page_dict.get(b"Resources").ok().cloned();
+            (media_box, resources)
+        } else {
+            (None, None)
+        };
+
+    // Create new page dictionary
+    let mut new_page_dict = dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+    };
+
+    if let Some(media_box) = media_box {
+        new_page_dict.set("MediaBox", media_box);
+    } else {
+        // Default to A4
+        new_page_dict.set("MediaBox", vec![0.into(), 0.into(), 595.into(), 842.into()]);
+    }
+
+    if let Some(resources) = resources_id {
+        new_page_dict.set("Resources", resources);
+    }
+
+    let new_page_id = doc.add_object(new_page_dict);
+
+    // Add page to Pages kids array
+    if let Ok(Object::Dictionary(pages_dict)) = doc.get_object_mut(pages_id) {
+        if let Ok(Object::Array(kids)) = pages_dict.get_mut(b"Kids") {
+            kids.push(new_page_id.into());
+        }
+
+        // Update page count
+        if let Ok(Object::Integer(count)) = pages_dict.get(b"Count") {
+            pages_dict.set("Count", Object::Integer(count + 1));
+        }
+    }
+
+    trace!("Created new page {:?}", new_page_id);
+    Ok(new_page_id)
+}
+
+/// Draw a subset of rows on a specific page
+fn draw_rows_subset(
+    doc: &mut Document,
+    page_id: ObjectId,
+    table: &Table,
+    layout: &TableLayout,
+    row_indices: &[usize],
+    position: (f32, f32),
+) -> Result<()> {
+    if row_indices.is_empty() {
+        return Ok(());
+    }
+
+    debug!("Drawing {} rows on page {:?}", row_indices.len(), page_id);
+
+    let mut operations = Vec::new();
+    let (start_x, start_y) = position;
+    let mut current_y = start_y;
+
+    // Calculate which columns to draw (all columns for now)
+    let column_count = table.column_count();
+
+    // Draw table background if this is the first page
+    if row_indices.contains(&0) {
+        if let Some(bg_color) = &table.style.background_color {
+            let subset_height: f32 = row_indices.iter().map(|&i| layout.row_heights[i]).sum();
+            operations.extend(draw_rectangle_fill(
+                start_x,
+                start_y - subset_height,
+                layout.total_width,
+                subset_height,
+                *bg_color,
+            ));
+        }
+    }
+
+    // Draw rows
+    for &row_idx in row_indices {
+        let row = &table.rows[row_idx];
+        let row_height = layout.row_heights[row_idx];
+        let mut current_x = start_x;
+
+        // Draw row background if specified
+        if let Some(ref row_style) = row.style {
+            if let Some(bg_color) = row_style.background_color {
+                operations.extend(draw_rectangle_fill(
+                    start_x,
+                    current_y - row_height,
+                    layout.total_width,
+                    row_height,
+                    bg_color,
+                ));
+            }
+        }
+
+        // Draw cells
+        for (col_idx, cell) in row.cells.iter().enumerate() {
+            if col_idx >= column_count {
+                break;
+            }
+
+            let col_width = layout.column_widths[col_idx];
+
+            // Draw cell background if specified
+            if let Some(ref cell_style) = cell.style {
+                if let Some(bg_color) = cell_style.background_color {
+                    operations.extend(draw_rectangle_fill(
+                        current_x,
+                        current_y - row_height,
+                        col_width,
+                        row_height,
+                        bg_color,
+                    ));
+                }
+            }
+
+            // Draw cell content
+            operations.extend(draw_cell_text(
+                cell, table, current_x, current_y, col_width, row_height,
+            )?);
+
+            current_x += col_width;
+        }
+
+        current_y -= row_height;
+    }
+
+    // Draw borders for this subset
+    operations.extend(draw_subset_borders(table, layout, row_indices, position));
+
+    // Add operations to page
+    add_operations_to_page(doc, page_id, operations)?;
+
+    Ok(())
+}
+
+/// Draw borders for a subset of rows
+fn draw_subset_borders(
+    table: &Table,
+    layout: &TableLayout,
+    row_indices: &[usize],
+    position: (f32, f32),
+) -> Vec<Object> {
+    let mut operations = Vec::new();
+    let (start_x, start_y) = position;
+
+    if table.style.border_style == BorderStyle::None || row_indices.is_empty() {
+        return operations;
+    }
+
+    // Calculate height of this subset
+    let subset_height: f32 = row_indices.iter().map(|&i| layout.row_heights[i]).sum();
+
+    // Set stroke color and width
+    operations.extend(vec![
+        Object::Name(b"RG".to_vec()),
+        table.style.border_color.r.into(),
+        table.style.border_color.g.into(),
+        table.style.border_color.b.into(),
+        Object::Name(b"w".to_vec()),
+        table.style.border_width.into(),
+    ]);
+
+    // Draw outer border for this subset
+    operations.extend(vec![
+        Object::Name(b"re".to_vec()),
+        start_x.into(),
+        (start_y - subset_height).into(),
+        layout.total_width.into(),
+        subset_height.into(),
+        Object::Name(b"S".to_vec()),
+    ]);
+
+    // Draw horizontal lines between rows in this subset
+    let mut current_y = start_y;
+    for (idx, &row_idx) in row_indices.iter().enumerate() {
+        if idx > 0 {
+            operations.extend(vec![
+                Object::Name(b"m".to_vec()),
+                start_x.into(),
+                current_y.into(),
+                Object::Name(b"l".to_vec()),
+                (start_x + layout.total_width).into(),
+                current_y.into(),
+                Object::Name(b"S".to_vec()),
+            ]);
+        }
+        current_y -= layout.row_heights[row_idx];
+    }
+
+    // Draw vertical lines between columns
+    let mut current_x = start_x;
+    for (i, width) in layout.column_widths.iter().enumerate() {
+        if i > 0 {
+            operations.extend(vec![
+                Object::Name(b"m".to_vec()),
+                current_x.into(),
+                start_y.into(),
+                Object::Name(b"l".to_vec()),
+                current_x.into(),
+                (start_y - subset_height).into(),
+                Object::Name(b"S".to_vec()),
+            ]);
+        }
+        current_x += width;
+    }
+
+    operations
 }
