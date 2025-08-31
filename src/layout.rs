@@ -1,6 +1,7 @@
 //! Layout calculation for tables
 
 use crate::Result;
+use crate::constants::*;
 use crate::error::TableError;
 use crate::table::{ColumnWidth, Table};
 use tracing::{debug, trace};
@@ -57,7 +58,7 @@ pub fn calculate_layout(table: &Table) -> Result<TableLayout> {
 fn estimate_total_width(_table: &Table) -> f32 {
     // Default to a reasonable page width minus margins
     // Standard US Letter is 612 points wide, leave 50 points margin on each side
-    512.0
+    LETTER_WIDTH - (DEFAULT_MARGIN * 2.0)
 }
 
 /// Resolve column widths from specifications
@@ -121,12 +122,12 @@ fn resolve_column_widths(
                     resolved_widths[col] = remaining_width / auto_columns.len() as f32;
                 }
                 // Ensure minimum width
-                resolved_widths[col] = resolved_widths[col].max(20.0);
+                resolved_widths[col] = resolved_widths[col].max(MIN_COLUMN_WIDTH);
             }
         } else {
             // If no remaining width, give auto columns a minimum width
             for &col in &auto_columns {
-                resolved_widths[col] = 20.0;
+                resolved_widths[col] = MIN_COLUMN_WIDTH;
             }
         }
     }
@@ -148,7 +149,8 @@ fn estimate_column_content_width(table: &Table, col_idx: usize) -> f32 {
                 .and_then(|s| s.font_size)
                 .unwrap_or(table.style.default_font_size);
 
-            let estimated_width = estimate_text_width(&cell.content, font_size);
+            let estimated_width =
+                crate::drawing_utils::estimate_text_width(&cell.content, font_size);
             max_width = f32::max(max_width, estimated_width);
         }
     }
@@ -176,7 +178,7 @@ fn calculate_column_widths(table: &Table) -> Result<Vec<f32>> {
 
             // Estimate width based on character count
             // This is a simplified calculation - real implementation would measure text
-            let estimated_width = estimate_text_width(
+            let estimated_width = crate::drawing_utils::estimate_text_width(
                 &cell.content,
                 cell.style
                     .as_ref()
@@ -193,7 +195,7 @@ fn calculate_column_widths(table: &Table) -> Result<Vec<f32>> {
     for width in &mut max_widths {
         *width += padding;
         // Ensure minimum width
-        *width = width.max(20.0);
+        *width = width.max(MIN_COLUMN_WIDTH);
     }
 
     trace!("Calculated column widths: {:?}", max_widths);
@@ -233,7 +235,7 @@ fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32
                         &cell.content,
                         available_width,
                         font_size,
-                        1.2, // Line spacing factor
+                        DEFAULT_LINE_HEIGHT_MULTIPLIER,
                     )
                 } else {
                     // Single line height
@@ -256,17 +258,10 @@ fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32
     Ok(heights)
 }
 
-/// Estimate text width based on character count and font size
-fn estimate_text_width(text: &str, font_size: f32) -> f32 {
-    // Simplified estimation: average character width is ~0.5 of font size
-    let char_count = text.chars().count() as f32;
-    char_count * font_size * 0.5
-}
-
 /// Convert font size to line height
 fn font_size_to_height(font_size: f32) -> f32 {
     // Standard line height is typically 1.2x font size
-    font_size * 1.2
+    font_size * DEFAULT_LINE_HEIGHT_MULTIPLIER
 }
 
 #[cfg(test)]

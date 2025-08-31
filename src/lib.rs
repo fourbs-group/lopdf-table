@@ -6,12 +6,17 @@
 use lopdf::{Document, Object, ObjectId};
 use tracing::{debug, instrument, trace};
 
+mod constants;
 mod drawing;
+mod drawing_utils;
 pub mod error;
 pub mod layout;
 pub mod style;
 pub mod table;
 mod text;
+
+// Re-export constants for public use
+pub use constants::*;
 
 pub use error::{Result, TableError};
 pub use style::{
@@ -95,7 +100,7 @@ impl TableDrawing for Document {
     #[instrument(skip(self, table))]
     fn add_table_to_page(&mut self, page_id: ObjectId, table: Table) -> Result<()> {
         // For now, default to top-left with some margin
-        let position = (50.0, 750.0);
+        let position = (DEFAULT_MARGIN, A4_HEIGHT - DEFAULT_MARGIN - 50.0);
         self.draw_table(page_id, table, position)
     }
 

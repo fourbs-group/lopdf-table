@@ -2,8 +2,13 @@
 
 use crate::PagedTableResult;
 use crate::Result;
+use crate::constants::*;
+use crate::drawing_utils::{
+    BorderDrawingMode, calculate_cell_width, draw_rectangle_fill,
+    draw_table_borders as draw_borders_util, objects_to_operations,
+};
 use crate::layout::TableLayout;
-use crate::style::{Alignment, BorderStyle, Color, VerticalAlignment};
+use crate::style::{Alignment, Color, VerticalAlignment};
 use crate::table::Table;
 use lopdf::{
     Document, Object, ObjectId,
@@ -64,12 +69,7 @@ pub fn generate_table_operations(
             }
 
             // Calculate the total width for cells with colspan
-            let cell_width = if cell.colspan > 1 {
-                let end_col = (col_idx + cell.colspan).min(layout.column_widths.len());
-                layout.column_widths[col_idx..end_col].iter().sum()
-            } else {
-                layout.column_widths[col_idx]
-            };
+            let cell_width = calculate_cell_width(col_idx, cell.colspan, &layout.column_widths);
 
             // Draw cell background if specified
             if let Some(ref cell_style) = cell.style {
@@ -103,112 +103,9 @@ pub fn generate_table_operations(
     Ok(operations)
 }
 
-/// Draw a filled rectangle
-fn draw_rectangle_fill(x: f32, y: f32, width: f32, height: f32, color: Color) -> Vec<Object> {
-    vec![
-        // Set fill color
-        Object::Name(b"rg".to_vec()),
-        color.r.into(),
-        color.g.into(),
-        color.b.into(),
-        // Draw rectangle
-        Object::Name(b"re".to_vec()),
-        x.into(),
-        y.into(),
-        width.into(),
-        height.into(),
-        // Fill
-        Object::Name(b"f".to_vec()),
-    ]
-}
-
-/// Draw table borders
+/// Draw table borders (wrapper for the shared utility)
 fn draw_table_borders(table: &Table, layout: &TableLayout, position: (f32, f32)) -> Vec<Object> {
-    let mut operations = Vec::new();
-    let (start_x, start_y) = position;
-
-    if table.style.border_style == BorderStyle::None {
-        return operations;
-    }
-
-    // Set stroke color
-    operations.extend(vec![
-        Object::Name(b"RG".to_vec()),
-        table.style.border_color.r.into(),
-        table.style.border_color.g.into(),
-        table.style.border_color.b.into(),
-    ]);
-
-    // Set line width
-    operations.extend(vec![
-        Object::Name(b"w".to_vec()),
-        table.style.border_width.into(),
-    ]);
-
-    // Draw outer border
-    operations.extend(vec![
-        Object::Name(b"re".to_vec()),
-        start_x.into(),
-        (start_y - layout.total_height).into(),
-        layout.total_width.into(),
-        layout.total_height.into(),
-        Object::Name(b"S".to_vec()),
-    ]);
-
-    // Draw horizontal lines between rows
-    let mut current_y = start_y;
-    for (i, height) in layout.row_heights.iter().enumerate() {
-        if i > 0 {
-            operations.extend(vec![
-                Object::Name(b"m".to_vec()),
-                start_x.into(),
-                current_y.into(),
-                Object::Name(b"l".to_vec()),
-                (start_x + layout.total_width).into(),
-                current_y.into(),
-                Object::Name(b"S".to_vec()),
-            ]);
-        }
-        current_y -= height;
-    }
-
-    // Draw vertical lines between columns (skip lines within spanned cells)
-    for (row_idx, row) in table.rows.iter().enumerate() {
-        let mut current_x = start_x;
-        let mut col_idx = 0;
-        let row_y_top = start_y - layout.row_heights.iter().take(row_idx).sum::<f32>();
-        let row_y_bottom = row_y_top - layout.row_heights[row_idx];
-
-        for cell in &row.cells {
-            if col_idx >= layout.column_widths.len() {
-                break;
-            }
-
-            // Draw vertical line at the start of this cell (if not first column)
-            if col_idx > 0 {
-                operations.extend(vec![
-                    Object::Name(b"m".to_vec()),
-                    current_x.into(),
-                    row_y_top.into(),
-                    Object::Name(b"l".to_vec()),
-                    current_x.into(),
-                    row_y_bottom.into(),
-                    Object::Name(b"S".to_vec()),
-                ]);
-            }
-
-            // Move across the span of this cell
-            let cell_span = cell.colspan.max(1);
-            for span_idx in 0..cell_span {
-                if col_idx + span_idx < layout.column_widths.len() {
-                    current_x += layout.column_widths[col_idx + span_idx];
-                }
-            }
-            col_idx += cell_span;
-        }
-    }
-
-    operations
+    draw_borders_util(table, layout, position, BorderDrawingMode::Full, None)
 }
 
 /// Draw text within a cell (returns Operation objects directly)
@@ -269,7 +166,7 @@ fn draw_cell_text_operations(
     };
 
     // Calculate line height
-    let line_height = font_size * 1.2;
+    let line_height = font_size * DEFAULT_LINE_HEIGHT_MULTIPLIER;
     let total_text_height = lines.len() as f32 * line_height;
 
     // Calculate starting Y position based on vertical alignment
@@ -313,7 +210,7 @@ fn draw_cell_text_operations(
     // Draw each line of text
     for (line_idx, line) in lines.iter().enumerate() {
         // Estimate text width for alignment
-        let estimated_text_width = line.len() as f32 * font_size * 0.5;
+        let estimated_text_width = line.len() as f32 * font_size * DEFAULT_CHAR_WIDTH_RATIO;
 
         let text_x = match alignment {
             Alignment::Left => x + padding.left,
@@ -333,12 +230,12 @@ fn draw_cell_text_operations(
                 Alignment::Left => x + padding.left,
                 Alignment::Center => {
                     let prev_line = &lines[line_idx - 1];
-                    let prev_width = prev_line.len() as f32 * font_size * 0.5;
+                    let prev_width = prev_line.len() as f32 * font_size * DEFAULT_CHAR_WIDTH_RATIO;
                     x + width / 2.0 - prev_width / 2.0
                 }
                 Alignment::Right => {
                     let prev_line = &lines[line_idx - 1];
-                    let prev_width = prev_line.len() as f32 * font_size * 0.5;
+                    let prev_width = prev_line.len() as f32 * font_size * DEFAULT_CHAR_WIDTH_RATIO;
                     x + width - padding.right - prev_width
                 }
             };
@@ -396,84 +293,8 @@ pub fn add_operations_to_page(
     );
     trace!("Raw operations: {:?}", operations);
 
-    // Convert operations to Content
-    let mut content_ops = Vec::new();
-    let mut i = 0;
-
-    while i < operations.len() {
-        if let Object::Name(ref name) = operations[i] {
-            let name_str = String::from_utf8_lossy(name);
-
-            // Check if this is an operator
-            // PDF operators: BT, ET, Tf, Td, Tj, TJ, Tm, rg, RG, re, m, l, h, S, f, w, etc.
-            // Font names: F1, F1-Bold, etc. (start with F followed by a digit or dash)
-            let is_operator = match name_str.as_ref() {
-                // Text operators
-                "BT" | "ET" | "Tf" | "Td" | "Tj" | "TJ" | "Tm" => true,
-                // Color operators
-                "rg" | "RG" | "g" | "G" => true,
-                // Path construction
-                "m" | "l" | "c" | "v" | "y" | "h" | "re" => true,
-                // Path painting
-                "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" => true,
-                // Line width
-                "w" => true,
-                // Other operators that start with lowercase
-                _ if name_str.chars().next().map_or(false, |c| c.is_lowercase()) => true,
-                _ => false,
-            };
-
-            if is_operator {
-                // This is an operator
-                let operator = name_str.to_string();
-                let mut operands = Vec::new();
-
-                // Collect operands until next operator
-                i += 1;
-                while i < operations.len() {
-                    if let Object::Name(ref next_name) = operations[i] {
-                        let next_str = String::from_utf8_lossy(next_name);
-                        // Check if this Name is an operator using the same logic
-                        let is_next_operator = match next_str.as_ref() {
-                            // Text operators
-                            "BT" | "ET" | "Tf" | "Td" | "Tj" | "TJ" | "Tm" => true,
-                            // Color operators
-                            "rg" | "RG" | "g" | "G" => true,
-                            // Path construction
-                            "m" | "l" | "c" | "v" | "y" | "h" | "re" => true,
-                            // Path painting
-                            "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" => true,
-                            // Line width
-                            "w" => true,
-                            // Other operators that start with lowercase
-                            _ if next_str.chars().next().map_or(false, |c| c.is_lowercase()) => {
-                                true
-                            }
-                            _ => false,
-                        };
-                        if is_next_operator {
-                            break;
-                        }
-                    }
-                    operands.push(operations[i].clone());
-                    i += 1;
-                }
-
-                content_ops.push(Operation::new(&operator, operands));
-            } else {
-                // This Name is an operand, not an operator
-                // This shouldn't happen if operations are generated correctly
-                trace!(
-                    "Warning: Name object '{}' appears without an operator",
-                    name_str
-                );
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
-    }
-
+    // Convert operations to Content using the shared utility
+    let content_ops = objects_to_operations(&operations);
     let content = Content {
         operations: content_ops.clone(),
     };
@@ -508,7 +329,7 @@ pub fn draw_table_paginated(
     );
 
     // Get page dimensions
-    let page_height = table.style.page_height.unwrap_or(842.0); // A4 default
+    let page_height = table.style.page_height.unwrap_or(A4_HEIGHT); // A4 default
     let top_margin = table.style.top_margin;
     let bottom_margin = table.style.bottom_margin;
 
@@ -632,7 +453,10 @@ fn create_new_page(doc: &mut Document, source_page_id: ObjectId) -> Result<Objec
         new_page_dict.set("MediaBox", media_box);
     } else {
         // Default to A4
-        new_page_dict.set("MediaBox", vec![0.into(), 0.into(), 595.into(), 842.into()]);
+        new_page_dict.set(
+            "MediaBox",
+            vec![0.into(), 0.into(), A4_WIDTH.into(), A4_HEIGHT.into()],
+        );
     }
 
     if let Some(resources) = resources_id {
@@ -720,12 +544,7 @@ fn draw_rows_subset(
             }
 
             // Calculate the total width for cells with colspan
-            let cell_width = if cell.colspan > 1 {
-                let end_col = (col_idx + cell.colspan).min(layout.column_widths.len());
-                layout.column_widths[col_idx..end_col].iter().sum()
-            } else {
-                layout.column_widths[col_idx]
-            };
+            let cell_width = calculate_cell_width(col_idx, cell.colspan, &layout.column_widths);
 
             // Draw cell background if specified
             if let Some(ref cell_style) = cell.style {
@@ -761,105 +580,22 @@ fn draw_rows_subset(
     Ok(())
 }
 
-/// Draw borders for a subset of rows
+/// Draw borders for a subset of rows (wrapper for the shared utility)
 fn draw_subset_borders(
     table: &Table,
     layout: &TableLayout,
     row_indices: &[usize],
     position: (f32, f32),
 ) -> Vec<Object> {
-    let mut operations = Vec::new();
-    let (start_x, start_y) = position;
-
-    if table.style.border_style == BorderStyle::None || row_indices.is_empty() {
-        return operations;
+    if row_indices.is_empty() {
+        return Vec::new();
     }
-
-    // Calculate height of this subset
     let subset_height: f32 = row_indices.iter().map(|&i| layout.row_heights[i]).sum();
-
-    // Set stroke color and width
-    operations.extend(vec![
-        Object::Name(b"RG".to_vec()),
-        table.style.border_color.r.into(),
-        table.style.border_color.g.into(),
-        table.style.border_color.b.into(),
-        Object::Name(b"w".to_vec()),
-        table.style.border_width.into(),
-    ]);
-
-    // Draw outer border for this subset
-    operations.extend(vec![
-        Object::Name(b"re".to_vec()),
-        start_x.into(),
-        (start_y - subset_height).into(),
-        layout.total_width.into(),
-        subset_height.into(),
-        Object::Name(b"S".to_vec()),
-    ]);
-
-    // Draw horizontal lines between rows in this subset
-    let mut current_y = start_y;
-    for (idx, &row_idx) in row_indices.iter().enumerate() {
-        if idx > 0 {
-            operations.extend(vec![
-                Object::Name(b"m".to_vec()),
-                start_x.into(),
-                current_y.into(),
-                Object::Name(b"l".to_vec()),
-                (start_x + layout.total_width).into(),
-                current_y.into(),
-                Object::Name(b"S".to_vec()),
-            ]);
-        }
-        current_y -= layout.row_heights[row_idx];
-    }
-
-    // Draw vertical lines between columns (skip lines within spanned cells)
-    for (idx, &row_idx) in row_indices.iter().enumerate() {
-        if row_idx >= table.rows.len() {
-            continue;
-        }
-
-        let row = &table.rows[row_idx];
-        let mut current_x = start_x;
-        let mut col_idx = 0;
-        let row_y_top = start_y
-            - row_indices
-                .iter()
-                .take(idx)
-                .map(|&i| layout.row_heights[i])
-                .sum::<f32>();
-        let row_y_bottom = row_y_top - layout.row_heights[row_idx];
-
-        for cell in &row.cells {
-            if col_idx >= layout.column_widths.len() {
-                break;
-            }
-
-            // Draw vertical line at the start of this cell (if not first column)
-            if col_idx > 0 {
-                operations.extend(vec![
-                    Object::Name(b"m".to_vec()),
-                    current_x.into(),
-                    row_y_top.into(),
-                    Object::Name(b"l".to_vec()),
-                    current_x.into(),
-                    row_y_bottom.into(),
-                    Object::Name(b"S".to_vec()),
-                ]);
-            }
-
-            // Move across the span of this cell
-            let cell_span = cell.colspan.max(1);
-            for span_idx in 0..cell_span {
-                if col_idx + span_idx < layout.column_widths.len() {
-                    current_x += layout.column_widths[col_idx + span_idx];
-                }
-            }
-            col_idx += cell_span;
-        }
-    }
-
-    operations
+    draw_borders_util(
+        table,
+        layout,
+        position,
+        BorderDrawingMode::Subset(subset_height),
+        Some(row_indices),
+    )
 }

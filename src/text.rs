@@ -1,5 +1,6 @@
 //! Text handling and wrapping utilities
 
+use crate::constants::*;
 use tracing::trace;
 
 /// Break text into lines that fit within the specified width
@@ -8,7 +9,7 @@ pub fn wrap_text(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
         return vec![String::new()];
     }
 
-    let char_width = font_size * 0.5; // Simplified character width estimation
+    let char_width = font_size * DEFAULT_CHAR_WIDTH_RATIO; // Simplified character width estimation
     let max_chars_per_line = (max_width / char_width) as usize;
 
     if max_chars_per_line == 0 {

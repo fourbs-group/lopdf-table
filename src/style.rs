@@ -1,5 +1,7 @@
 //! Styling structures for tables, rows, and cells
 
+use crate::constants::DEFAULT_MARGIN;
+
 /// RGB color representation
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
@@ -158,8 +160,8 @@ impl Default for TableStyle {
             font_name: "Helvetica".to_string(),
             default_font_size: 10.0,
             page_height: None, // Will default to A4 (842 points)
-            top_margin: 50.0,
-            bottom_margin: 50.0,
+            top_margin: DEFAULT_MARGIN,
+            bottom_margin: DEFAULT_MARGIN,
             repeat_headers: true,
         }
     }
