@@ -83,9 +83,12 @@ impl Table {
         self
     }
 
-    /// Get the number of columns (based on the first row)
+    /// Get the number of columns (based on the first row, accounting for colspan)
     pub fn column_count(&self) -> usize {
-        self.rows.first().map(|r| r.cells.len()).unwrap_or(0)
+        self.rows
+            .first()
+            .map(|r| r.cells.iter().map(|c| c.colspan.max(1)).sum())
+            .unwrap_or(0)
     }
 
     /// Validate table structure
@@ -98,12 +101,16 @@ impl Table {
 
         let expected_cols = self.column_count();
         for (i, row) in self.rows.iter().enumerate() {
-            if row.cells.len() != expected_cols {
+            // Calculate the total column coverage including colspan
+            let mut total_coverage = 0;
+            for cell in &row.cells {
+                total_coverage += cell.colspan.max(1);
+            }
+
+            if total_coverage != expected_cols {
                 return Err(crate::error::TableError::InvalidTable(format!(
-                    "Row {} has {} cells, expected {}",
-                    i,
-                    row.cells.len(),
-                    expected_cols
+                    "Row {} covers {} columns (with colspan), expected {}",
+                    i, total_coverage, expected_cols
                 )));
             }
         }

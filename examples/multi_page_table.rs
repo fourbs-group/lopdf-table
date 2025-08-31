@@ -98,19 +98,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    // Add main header row (create 5 cells for proper validation, even though we'll use colspan later)
+    // Add main header row with colspan spanning all 5 columns
     table = table.add_row(
         Row::new(vec![
-            Cell::new("Employee Data Report").with_style(CellStyle {
-                text_color: Color::white(),
-                bold: true,
-                alignment: Alignment::Center,
-                ..Default::default()
-            }),
-            Cell::empty(),
-            Cell::empty(),
-            Cell::empty(),
-            Cell::empty(),
+            Cell::new("Employee Data Report")
+                .with_style(CellStyle {
+                    text_color: Color::white(),
+                    bold: true,
+                    alignment: Alignment::Center,
+                    ..Default::default()
+                })
+                .with_colspan(5), // Span all 5 columns
         ])
         .with_style(RowStyle {
             background_color: Some(Color::rgb(0.15, 0.25, 0.45)),

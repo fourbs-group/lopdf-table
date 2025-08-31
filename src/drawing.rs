@@ -57,8 +57,19 @@ pub fn generate_table_operations(
             }
         }
 
-        for (col_idx, cell) in row.cells.iter().enumerate() {
-            let col_width = layout.column_widths[col_idx];
+        let mut col_idx = 0;
+        for cell in row.cells.iter() {
+            if col_idx >= layout.column_widths.len() {
+                break;
+            }
+
+            // Calculate the total width for cells with colspan
+            let cell_width = if cell.colspan > 1 {
+                let end_col = (col_idx + cell.colspan).min(layout.column_widths.len());
+                layout.column_widths[col_idx..end_col].iter().sum()
+            } else {
+                layout.column_widths[col_idx]
+            };
 
             // Draw cell background if specified
             if let Some(ref cell_style) = cell.style {
@@ -66,7 +77,7 @@ pub fn generate_table_operations(
                     operations.extend(draw_rectangle_fill(
                         current_x,
                         current_y - row_height,
-                        col_width,
+                        cell_width,
                         row_height,
                         bg_color,
                     ));
@@ -75,10 +86,11 @@ pub fn generate_table_operations(
 
             // Draw cell content (text)
             operations.extend(draw_cell_text(
-                cell, table, current_x, current_y, col_width, row_height,
+                cell, table, current_x, current_y, cell_width, row_height,
             )?);
 
-            current_x += col_width;
+            current_x += cell_width;
+            col_idx += cell.colspan.max(1);
         }
 
         current_y -= row_height;
@@ -160,10 +172,33 @@ fn draw_table_borders(table: &Table, layout: &TableLayout, position: (f32, f32))
         current_y -= height;
     }
 
-    // Draw vertical lines between columns
+    // Build a map of which columns need vertical borders
+    // A column needs a border if it's not within a spanned cell for all rows
+    let mut column_needs_border = vec![true; layout.column_widths.len()];
+
+    // Check each row to see which columns are within spanned cells
+    for row in &table.rows {
+        let mut col_idx = 0;
+        for cell in &row.cells {
+            if col_idx >= layout.column_widths.len() {
+                break;
+            }
+
+            // Mark columns within the span (except the first) as not needing borders
+            if cell.colspan > 1 {
+                for span_offset in 1..cell.colspan.min(layout.column_widths.len() - col_idx) {
+                    column_needs_border[col_idx + span_offset] = false;
+                }
+            }
+
+            col_idx += cell.colspan.max(1);
+        }
+    }
+
+    // Draw vertical lines between columns (only where needed)
     let mut current_x = start_x;
     for (i, width) in layout.column_widths.iter().enumerate() {
-        if i > 0 {
+        if i > 0 && column_needs_border[i] {
             operations.extend(vec![
                 Object::Name(b"m".to_vec()),
                 current_x.into(),
@@ -682,12 +717,19 @@ fn draw_rows_subset(
         }
 
         // Draw cells
-        for (col_idx, cell) in row.cells.iter().enumerate() {
+        let mut col_idx = 0;
+        for cell in row.cells.iter() {
             if col_idx >= column_count {
                 break;
             }
 
-            let col_width = layout.column_widths[col_idx];
+            // Calculate the total width for cells with colspan
+            let cell_width = if cell.colspan > 1 {
+                let end_col = (col_idx + cell.colspan).min(layout.column_widths.len());
+                layout.column_widths[col_idx..end_col].iter().sum()
+            } else {
+                layout.column_widths[col_idx]
+            };
 
             // Draw cell background if specified
             if let Some(ref cell_style) = cell.style {
@@ -695,7 +737,7 @@ fn draw_rows_subset(
                     operations.extend(draw_rectangle_fill(
                         current_x,
                         current_y - row_height,
-                        col_width,
+                        cell_width,
                         row_height,
                         bg_color,
                     ));
@@ -704,10 +746,11 @@ fn draw_rows_subset(
 
             // Draw cell content
             operations.extend(draw_cell_text(
-                cell, table, current_x, current_y, col_width, row_height,
+                cell, table, current_x, current_y, cell_width, row_height,
             )?);
 
-            current_x += col_width;
+            current_x += cell_width;
+            col_idx += cell.colspan.max(1);
         }
 
         current_y -= row_height;
@@ -776,10 +819,35 @@ fn draw_subset_borders(
         current_y -= layout.row_heights[row_idx];
     }
 
-    // Draw vertical lines between columns
+    // Build a map of which columns need vertical borders based on the rows in this subset
+    let mut column_needs_border = vec![true; layout.column_widths.len()];
+
+    // Check each row in this subset to see which columns are within spanned cells
+    for &row_idx in row_indices {
+        if row_idx < table.rows.len() {
+            let row = &table.rows[row_idx];
+            let mut col_idx = 0;
+            for cell in &row.cells {
+                if col_idx >= layout.column_widths.len() {
+                    break;
+                }
+
+                // Mark columns within the span (except the first) as not needing borders
+                if cell.colspan > 1 {
+                    for span_offset in 1..cell.colspan.min(layout.column_widths.len() - col_idx) {
+                        column_needs_border[col_idx + span_offset] = false;
+                    }
+                }
+
+                col_idx += cell.colspan.max(1);
+            }
+        }
+    }
+
+    // Draw vertical lines between columns (only where needed)
     let mut current_x = start_x;
     for (i, width) in layout.column_widths.iter().enumerate() {
-        if i > 0 {
+        if i > 0 && column_needs_border[i] {
             operations.extend(vec![
                 Object::Name(b"m".to_vec()),
                 current_x.into(),
