@@ -179,17 +179,41 @@ fn draw_cell_text_operations(
     // Begin text object
     operations.push(Operation::new("BT", vec![]));
 
-    // Set font
-    let font_name = if cell.style.as_ref().map_or(false, |s| s.bold) {
-        "F1-Bold"
+    // Determine font name using inheritance hierarchy:
+    // 1. Cell font (if specified)
+    // 2. Table font
+    // 3. Default font ("Helvetica")
+    let base_font_name = cell
+        .style
+        .as_ref()
+        .and_then(|s| s.font_name.as_ref())
+        .map(|s| s.as_str())
+        .unwrap_or(&table.style.font_name);
+
+    // Build the font resource name
+    // For now, we use a simple naming convention: font name + "-Bold" suffix if bold
+    // TODO: In the future, this should be handled by a font manager that ensures
+    // proper font resources are added to the PDF
+    let font_resource_name = if cell.style.as_ref().map_or(false, |s| s.bold) {
+        match base_font_name {
+            "Helvetica" => "F1-Bold",
+            "Courier" => "F2-Bold",
+            "Times-Roman" => "F3-Bold",
+            _ => "F1-Bold", // Fallback to Helvetica-Bold for unknown fonts
+        }
     } else {
-        "F1"
+        match base_font_name {
+            "Helvetica" => "F1",
+            "Courier" => "F2",
+            "Times-Roman" => "F3",
+            _ => "F1", // Fallback to Helvetica for unknown fonts
+        }
     };
 
     operations.push(Operation::new(
         "Tf",
         vec![
-            Object::Name(font_name.as_bytes().to_vec()),
+            Object::Name(font_resource_name.as_bytes().to_vec()),
             font_size.into(),
         ],
     ));

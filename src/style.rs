@@ -193,6 +193,9 @@ pub struct CellStyle {
     pub background_color: Option<Color>,
     pub text_color: Color,
     pub font_size: Option<f32>,
+    /// Font name for this cell. If None, inherits from table's font_name.
+    /// Supported fonts: "Helvetica", "Courier", "Times-Roman" (and their bold variants)
+    pub font_name: Option<String>,
     pub bold: bool,
     pub italic: bool,
     pub alignment: Alignment,
@@ -210,6 +213,7 @@ impl Default for CellStyle {
             background_color: None,
             text_color: Color::black(),
             font_size: None,
+            font_name: None,
             bold: false,
             italic: false,
             alignment: Alignment::Left,

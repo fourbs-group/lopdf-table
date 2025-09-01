@@ -291,4 +291,22 @@ mod tests {
         assert!(style.italic);
         assert_eq!(style.font_size, Some(14.0));
     }
+    
+    #[test]
+    fn test_cell_font_name() {
+        // Test with custom font
+        let style = CellStyle {
+            font_name: Some("Courier".to_string()),
+            ..Default::default()
+        };
+        let cell = Cell::new("Monospace text").with_style(style);
+        
+        assert_eq!(cell.content, "Monospace text");
+        let cell_style = cell.style.unwrap();
+        assert_eq!(cell_style.font_name, Some("Courier".to_string()));
+        
+        // Test with default (no font specified)
+        let cell_default = Cell::new("Default font");
+        assert!(cell_default.style.is_none());
+    }
 }
