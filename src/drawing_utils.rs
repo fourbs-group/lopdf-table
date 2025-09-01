@@ -13,6 +13,8 @@ pub fn is_pdf_operator(name: &str) -> bool {
         "BT" | "ET" | "Tf" | "Td" | "Tj" | "TJ" | "Tm" => true,
         // Color operators
         "rg" | "RG" | "g" | "G" => true,
+        // Graphics state save/restore and clipping
+        "q" | "Q" | "W" | "W*" => true,
         // Path construction
         "m" | "l" | "c" | "v" | "y" | "h" | "re" => true,
         // Path painting

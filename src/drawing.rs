@@ -292,14 +292,32 @@ fn draw_cell_text(
     width: f32,
     height: f32,
 ) -> Result<Vec<Object>> {
-    // This now converts Operations to the flat Object list for compatibility
+    // Convert text drawing operations to the flat Object list and
+    // wrap them with a clipping path equal to the cell bounds so that
+    // text never renders outside the cell.
     let ops = draw_cell_text_operations(cell, table, x, y, width, height);
     let mut objects = Vec::new();
 
+    // Save graphics state
+    objects.push(Object::Name("q".as_bytes().to_vec()));
+    // Define clipping rectangle (PDF uses lower-left origin)
+    objects.push(Object::Name("re".as_bytes().to_vec()));
+    objects.push(x.into());
+    objects.push((y - height).into());
+    objects.push(width.into());
+    objects.push(height.into());
+    // Set clip and end path
+    objects.push(Object::Name("W".as_bytes().to_vec()));
+    objects.push(Object::Name("n".as_bytes().to_vec()));
+
+    // Emit text operations
     for op in ops {
         objects.push(Object::Name(op.operator.as_bytes().to_vec()));
         objects.extend(op.operands);
     }
+
+    // Restore graphics state
+    objects.push(Object::Name("Q".as_bytes().to_vec()));
 
     Ok(objects)
 }
