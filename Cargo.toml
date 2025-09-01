@@ -2,10 +2,10 @@
 name = "lopdf-table"
 version = "0.1.0"
 edition = "2024"
-authors = ["Your Name"]
+authors = ["Oscar Rainford"]
 license = "MIT"
 description = "A composable table drawing library for PDFs built on lopdf"
-repository = "https://github.com/yourusername/lopdf-table"
+repository = "https://github.com/fourbs-group/lopdf-table"
 keywords = ["pdf", "table", "lopdf", "document", "generation"]
 categories = ["graphics", "text-processing"]
 
