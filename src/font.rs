@@ -7,7 +7,7 @@ use crate::constants::DEFAULT_CHAR_WIDTH_RATIO;
 ///
 /// Implement this trait to provide accurate font-aware text measurement
 /// and glyph encoding for Unicode text rendering with embedded fonts.
-pub trait FontMetrics {
+pub trait FontMetrics: Send + Sync {
     /// Width of a single character in points at the given font size
     fn char_width(&self, ch: char, font_size: f32) -> f32;
 
