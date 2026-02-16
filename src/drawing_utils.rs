@@ -112,9 +112,13 @@ pub fn estimate_text_width(text: &str, font_size: f32) -> f32 {
     char_count * font_size * DEFAULT_CHAR_WIDTH_RATIO
 }
 
-/// Convert font size to line height
-pub fn font_size_to_line_height(font_size: f32) -> f32 {
-    font_size * DEFAULT_LINE_HEIGHT_MULTIPLIER
+/// Measure text width using font metrics
+pub fn estimate_text_width_with_metrics(
+    text: &str,
+    font_size: f32,
+    metrics: &dyn crate::font::FontMetrics,
+) -> f32 {
+    metrics.text_width(text, font_size)
 }
 
 /// Convert a vector of Objects to Content operations

@@ -43,12 +43,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
     });
 
     let font_bold_id = doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Helvetica-Bold",
+        "Encoding" => "WinAnsiEncoding",
     });
 
     // Add resources to page

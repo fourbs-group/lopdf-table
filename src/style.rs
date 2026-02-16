@@ -147,6 +147,10 @@ pub struct TableStyle {
     pub bottom_margin: f32,
     /// Whether to repeat header rows on new pages
     pub repeat_headers: bool,
+    /// PDF resource name for an embedded font (e.g., "EF0").
+    /// When set together with `font_metrics` on the Table, text will be
+    /// encoded as glyph IDs and rendered using this font resource.
+    pub embedded_font_resource_name: Option<String>,
 }
 
 impl Default for TableStyle {
@@ -163,6 +167,7 @@ impl Default for TableStyle {
             top_margin: DEFAULT_MARGIN,
             bottom_margin: DEFAULT_MARGIN,
             repeat_headers: true,
+            embedded_font_resource_name: None,
         }
     }
 }
@@ -205,6 +210,9 @@ pub struct CellStyle {
     pub border_right: Option<(BorderStyle, f32, Color)>,
     pub border_top: Option<(BorderStyle, f32, Color)>,
     pub border_bottom: Option<(BorderStyle, f32, Color)>,
+    /// Override the embedded font resource name for this cell (e.g., "EF0").
+    /// If None, inherits from the table style's `embedded_font_resource_name`.
+    pub embedded_font_resource_name: Option<String>,
 }
 
 impl Default for CellStyle {
@@ -223,6 +231,7 @@ impl Default for CellStyle {
             border_right: None,
             border_top: None,
             border_bottom: None,
+            embedded_font_resource_name: None,
         }
     }
 }

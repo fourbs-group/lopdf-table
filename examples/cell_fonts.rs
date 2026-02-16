@@ -48,11 +48,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
     });
     let font_helvetica_bold = doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Helvetica-Bold",
+        "Encoding" => "WinAnsiEncoding",
     });
 
     // Courier fonts
@@ -60,11 +62,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Courier",
+        "Encoding" => "WinAnsiEncoding",
     });
     let font_courier_bold = doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Courier-Bold",
+        "Encoding" => "WinAnsiEncoding",
     });
 
     // Times-Roman fonts
@@ -72,11 +76,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Times-Roman",
+        "Encoding" => "WinAnsiEncoding",
     });
     let font_times_bold = doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Times-Bold",
+        "Encoding" => "WinAnsiEncoding",
     });
 
     // Add resources to page

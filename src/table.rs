@@ -1,7 +1,9 @@
 //! Core table structures
 
 use crate::Result;
+use crate::font::FontMetrics;
 use crate::style::{CellStyle, RowStyle, TableStyle};
+use std::sync::Arc;
 use tracing::trace;
 
 /// Column width specification
@@ -16,7 +18,7 @@ pub enum ColumnWidth {
 }
 
 /// Represents a table with rows and styling
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Table {
     pub rows: Vec<Row>,
     pub style: TableStyle,
@@ -26,6 +28,22 @@ pub struct Table {
     pub total_width: Option<f32>,
     /// Number of header rows to repeat on each page when paginating
     pub header_rows: usize,
+    /// Font metrics for accurate text measurement and Unicode encoding.
+    /// When set, enables font-aware text wrapping and glyph ID encoding.
+    pub font_metrics: Option<Arc<dyn FontMetrics>>,
+}
+
+impl std::fmt::Debug for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Table")
+            .field("rows", &self.rows)
+            .field("style", &self.style)
+            .field("column_widths", &self.column_widths)
+            .field("total_width", &self.total_width)
+            .field("header_rows", &self.header_rows)
+            .field("font_metrics", &self.font_metrics.as_ref().map(|_| "..."))
+            .finish()
+    }
 }
 
 impl Table {
@@ -37,6 +55,7 @@ impl Table {
             column_widths: None,
             total_width: None,
             header_rows: 0,
+            font_metrics: None,
         }
     }
 
@@ -80,6 +99,16 @@ impl Table {
     /// Set the number of header rows to repeat on each page
     pub fn with_header_rows(mut self, count: usize) -> Self {
         self.header_rows = count;
+        self
+    }
+
+    /// Set font metrics for accurate text measurement and Unicode encoding.
+    ///
+    /// When font metrics are provided along with `embedded_font_resource_name`
+    /// on the table style, text will be encoded as glyph IDs and measured
+    /// using the actual font data instead of heuristic estimates.
+    pub fn with_font_metrics(mut self, metrics: impl FontMetrics + 'static) -> Self {
+        self.font_metrics = Some(Arc::new(metrics));
         self
     }
 
@@ -291,7 +320,7 @@ mod tests {
         assert!(style.italic);
         assert_eq!(style.font_size, Some(14.0));
     }
-    
+
     #[test]
     fn test_cell_font_name() {
         // Test with custom font
@@ -300,11 +329,11 @@ mod tests {
             ..Default::default()
         };
         let cell = Cell::new("Monospace text").with_style(style);
-        
+
         assert_eq!(cell.content, "Monospace text");
         let cell_style = cell.style.unwrap();
         assert_eq!(cell_style.font_name, Some("Courier".to_string()));
-        
+
         // Test with default (no font specified)
         let cell_default = Cell::new("Default font");
         assert!(cell_default.style.is_none());

@@ -1,6 +1,6 @@
 [package]
 name = "lopdf-table"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 authors = ["Oscar Rainford"]
 license = "MIT"
@@ -9,10 +9,15 @@ repository = "https://github.com/fourbs-group/lopdf-table"
 keywords = ["pdf", "table", "lopdf", "document", "generation"]
 categories = ["graphics", "text-processing"]
 
+[features]
+default = ["ttf-parser"]
+ttf-parser = ["dep:ttf-parser"]
+
 [dependencies]
-lopdf = "0.38"
+lopdf = "0.39"
 tracing = "0.1"
-thiserror = "1.0"
+thiserror = "2.0"
+ttf-parser = { version = "0.25", optional = true }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -10,6 +10,7 @@ mod constants;
 mod drawing;
 mod drawing_utils;
 pub mod error;
+pub mod font;
 pub mod layout;
 pub mod style;
 pub mod table;
@@ -19,6 +20,9 @@ mod text;
 pub use constants::*;
 
 pub use error::{Result, TableError};
+pub use font::FontMetrics;
+#[cfg(feature = "ttf-parser")]
+pub use font::TtfFontMetrics;
 pub use style::{
     Alignment, BorderStyle, CellStyle, Color, RowStyle, TableStyle, VerticalAlignment,
 };
@@ -132,6 +136,7 @@ impl TableDrawing for Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::{Document, Object, dictionary};
 
     #[test]
     fn test_basic_table_creation() {
@@ -141,5 +146,70 @@ mod tests {
 
         assert_eq!(table.rows.len(), 2);
         assert_eq!(table.rows[0].cells.len(), 2);
+    }
+
+    #[test]
+    fn test_backward_compat_no_metrics() {
+        // Tables without font_metrics should still work identically
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![],
+            "Count" => 0,
+        });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        if let Ok(Object::Dictionary(pages)) = doc.get_object_mut(pages_id) {
+            if let Ok(Object::Array(kids)) = pages.get_mut(b"Kids") {
+                kids.push(page_id.into());
+            }
+            pages.set("Count", Object::Integer(1));
+        }
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+            page.set("Resources", resources_id);
+        }
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let table = Table::new()
+            .add_row(Row::new(vec![Cell::new("A"), Cell::new("B")]))
+            .add_row(Row::new(vec![Cell::new("C"), Cell::new("D")]))
+            .with_border(1.0);
+
+        assert!(table.font_metrics.is_none());
+        let result = doc.draw_table(page_id, table, (50.0, 750.0));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_unicode_table_no_metrics() {
+        // Unicode text in a table without metrics should not panic
+        let table = Table::new()
+            .add_row(Row::new(vec![
+                Cell::new("caf\u{00e9}"),
+                Cell::new("\u{00fc}ber"),
+            ]))
+            .add_row(Row::new(vec![
+                Cell::new("\u{4f60}\u{597d}"),
+                Cell::new("\u{00a9} 2025"),
+            ]));
+
+        assert_eq!(table.rows.len(), 2);
+        let layout = layout::calculate_layout(&table);
+        assert!(layout.is_ok());
     }
 }

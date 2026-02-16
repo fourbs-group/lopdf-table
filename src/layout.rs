@@ -149,8 +149,15 @@ fn estimate_column_content_width(table: &Table, col_idx: usize) -> f32 {
                 .and_then(|s| s.font_size)
                 .unwrap_or(table.style.default_font_size);
 
-            let estimated_width =
-                crate::drawing_utils::estimate_text_width(&cell.content, font_size);
+            let estimated_width = if let Some(ref metrics) = table.font_metrics {
+                crate::drawing_utils::estimate_text_width_with_metrics(
+                    &cell.content,
+                    font_size,
+                    metrics.as_ref(),
+                )
+            } else {
+                crate::drawing_utils::estimate_text_width(&cell.content, font_size)
+            };
             max_width = f32::max(max_width, estimated_width);
         }
     }
@@ -167,7 +174,6 @@ fn calculate_column_widths(table: &Table) -> Result<Vec<f32>> {
         return Err(TableError::LayoutError("No columns in table".to_string()));
     }
 
-    // For now, use a simple heuristic based on max content length
     let mut max_widths = vec![0.0; col_count];
 
     for row in &table.rows {
@@ -176,15 +182,21 @@ fn calculate_column_widths(table: &Table) -> Result<Vec<f32>> {
                 break;
             }
 
-            // Estimate width based on character count
-            // This is a simplified calculation - real implementation would measure text
-            let estimated_width = crate::drawing_utils::estimate_text_width(
-                &cell.content,
-                cell.style
-                    .as_ref()
-                    .and_then(|s| s.font_size)
-                    .unwrap_or(table.style.default_font_size),
-            );
+            let font_size = cell
+                .style
+                .as_ref()
+                .and_then(|s| s.font_size)
+                .unwrap_or(table.style.default_font_size);
+
+            let estimated_width = if let Some(ref metrics) = table.font_metrics {
+                crate::drawing_utils::estimate_text_width_with_metrics(
+                    &cell.content,
+                    font_size,
+                    metrics.as_ref(),
+                )
+            } else {
+                crate::drawing_utils::estimate_text_width(&cell.content, font_size)
+            };
 
             max_widths[i] = f32::max(max_widths[i], estimated_width);
         }
@@ -230,13 +242,22 @@ fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32
 
                 // Calculate height based on whether text wrapping is enabled
                 let estimated_height = if cell.text_wrap {
-                    // Use the text wrapping function to get actual wrapped height
-                    crate::text::calculate_wrapped_text_height(
-                        &cell.content,
-                        available_width,
-                        font_size,
-                        DEFAULT_LINE_HEIGHT_MULTIPLIER,
-                    )
+                    if let Some(ref metrics) = table.font_metrics {
+                        crate::text::calculate_wrapped_text_height_with_metrics(
+                            &cell.content,
+                            available_width,
+                            font_size,
+                            DEFAULT_LINE_HEIGHT_MULTIPLIER,
+                            metrics.as_ref(),
+                        )
+                    } else {
+                        crate::text::calculate_wrapped_text_height(
+                            &cell.content,
+                            available_width,
+                            font_size,
+                            DEFAULT_LINE_HEIGHT_MULTIPLIER,
+                        )
+                    }
                 } else {
                     // Single line height
                     font_size_to_height(font_size)

@@ -11,7 +11,7 @@ use crate::layout::TableLayout;
 use crate::style::{Alignment, Color, VerticalAlignment};
 use crate::table::Table;
 use lopdf::{
-    Document, Object, ObjectId,
+    Document, Object, ObjectId, StringFormat,
     content::{Content, Operation},
     dictionary,
 };
@@ -108,6 +108,15 @@ fn draw_table_borders(table: &Table, layout: &TableLayout, position: (f32, f32))
     draw_borders_util(table, layout, position, BorderDrawingMode::Full, None)
 }
 
+/// Estimate text width, using font metrics when available
+fn measure_text_width(text: &str, font_size: f32, table: &Table) -> f32 {
+    if let Some(ref metrics) = table.font_metrics {
+        metrics.text_width(text, font_size)
+    } else {
+        text.chars().count() as f32 * font_size * DEFAULT_CHAR_WIDTH_RATIO
+    }
+}
+
 /// Draw text within a cell (returns Operation objects directly)
 fn draw_cell_text_operations(
     cell: &crate::table::Cell,
@@ -160,9 +169,19 @@ fn draw_cell_text_operations(
 
     // Wrap text if enabled
     let lines = if cell.text_wrap {
-        crate::text::wrap_text(&cell.content, available_width, font_size)
+        if let Some(ref metrics) = table.font_metrics {
+            crate::text::wrap_text_with_metrics(
+                &cell.content,
+                available_width,
+                font_size,
+                metrics.as_ref(),
+            )
+        } else {
+            crate::text::wrap_text(&cell.content, available_width, font_size)
+        }
     } else {
-        vec![cell.content.clone()]
+        // Split by newlines even when wrapping is off, to handle embedded newlines
+        cell.content.split('\n').map(|s| s.to_string()).collect()
     };
 
     // Calculate line height
@@ -179,35 +198,45 @@ fn draw_cell_text_operations(
     // Begin text object
     operations.push(Operation::new("BT", vec![]));
 
-    // Determine font name using inheritance hierarchy:
-    // 1. Cell font (if specified)
-    // 2. Table font
-    // 3. Default font ("Helvetica")
-    let base_font_name = cell
+    // Determine which font resource name to use:
+    // 1. Cell's embedded_font_resource_name (if set)
+    // 2. Table style's embedded_font_resource_name (if set and metrics available)
+    // 3. Type1 font mapping (backward compatible)
+    let embedded_font_name = cell
         .style
         .as_ref()
-        .and_then(|s| s.font_name.as_ref())
-        .map(|s| s.as_str())
-        .unwrap_or(&table.style.font_name);
+        .and_then(|s| s.embedded_font_resource_name.as_deref())
+        .or(table.style.embedded_font_resource_name.as_deref());
 
-    // Build the font resource name
-    // For now, we use a simple naming convention: font name + "-Bold" suffix if bold
-    // TODO: In the future, this should be handled by a font manager that ensures
-    // proper font resources are added to the PDF
-    let font_resource_name = if cell.style.as_ref().map_or(false, |s| s.bold) {
-        match base_font_name {
-            "Helvetica" => "F1-Bold",
-            "Courier" => "F2-Bold",
-            "Times-Roman" => "F3-Bold",
-            _ => "F1-Bold", // Fallback to Helvetica-Bold for unknown fonts
-        }
+    let use_encoded_text = embedded_font_name.is_some() && table.font_metrics.is_some();
+
+    let font_resource_name: String = if let Some(efn) = embedded_font_name {
+        efn.to_string()
     } else {
-        match base_font_name {
-            "Helvetica" => "F1",
-            "Courier" => "F2",
-            "Times-Roman" => "F3",
-            _ => "F1", // Fallback to Helvetica for unknown fonts
+        // Type1 font mapping
+        let base_font_name = cell
+            .style
+            .as_ref()
+            .and_then(|s| s.font_name.as_ref())
+            .map(|s| s.as_str())
+            .unwrap_or(&table.style.font_name);
+
+        if cell.style.as_ref().map_or(false, |s| s.bold) {
+            match base_font_name {
+                "Helvetica" => "F1-Bold",
+                "Courier" => "F2-Bold",
+                "Times-Roman" => "F3-Bold",
+                _ => "F1-Bold",
+            }
+        } else {
+            match base_font_name {
+                "Helvetica" => "F1",
+                "Courier" => "F2",
+                "Times-Roman" => "F3",
+                _ => "F1",
+            }
         }
+        .to_string()
     };
 
     operations.push(Operation::new(
@@ -233,8 +262,7 @@ fn draw_cell_text_operations(
 
     // Draw each line of text
     for (line_idx, line) in lines.iter().enumerate() {
-        // Estimate text width for alignment
-        let estimated_text_width = line.len() as f32 * font_size * DEFAULT_CHAR_WIDTH_RATIO;
+        let estimated_text_width = measure_text_width(line, font_size, table);
 
         let text_x = match alignment {
             Alignment::Left => x + padding.left,
@@ -245,36 +273,35 @@ fn draw_cell_text_operations(
         let text_y = first_line_y - (line_idx as f32 * line_height);
 
         if line_idx == 0 {
-            // First line: use absolute positioning
             operations.push(Operation::new("Td", vec![text_x.into(), text_y.into()]));
         } else {
-            // Subsequent lines: move to new position
-            // We need to move from the previous line's position
+            let prev_line = &lines[line_idx - 1];
+            let prev_width = measure_text_width(prev_line, font_size, table);
             let prev_x = match alignment {
                 Alignment::Left => x + padding.left,
-                Alignment::Center => {
-                    let prev_line = &lines[line_idx - 1];
-                    let prev_width = prev_line.len() as f32 * font_size * DEFAULT_CHAR_WIDTH_RATIO;
-                    x + width / 2.0 - prev_width / 2.0
-                }
-                Alignment::Right => {
-                    let prev_line = &lines[line_idx - 1];
-                    let prev_width = prev_line.len() as f32 * font_size * DEFAULT_CHAR_WIDTH_RATIO;
-                    x + width - padding.right - prev_width
-                }
+                Alignment::Center => x + width / 2.0 - prev_width / 2.0,
+                Alignment::Right => x + width - padding.right - prev_width,
             };
 
-            // Calculate relative movement from previous position
             let dx = text_x - prev_x;
             let dy = -line_height;
             operations.push(Operation::new("Td", vec![dx.into(), dy.into()]));
         }
 
-        // Show text
-        operations.push(Operation::new(
-            "Tj",
-            vec![Object::string_literal(line.clone())],
-        ));
+        // Show text: use glyph ID encoding for embedded fonts, string literal for Type1
+        if use_encoded_text {
+            let metrics = table.font_metrics.as_ref().unwrap();
+            let encoded_bytes = metrics.encode_text(line);
+            operations.push(Operation::new(
+                "Tj",
+                vec![Object::String(encoded_bytes, StringFormat::Hexadecimal)],
+            ));
+        } else {
+            operations.push(Operation::new(
+                "Tj",
+                vec![Object::string_literal(line.clone())],
+            ));
+        }
     }
 
     // End text object
