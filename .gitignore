@@ -4,3 +4,4 @@ CLAUDE.md
 *.pdf
 .mcp.json
 Cargo.lock
+.DS_Store
