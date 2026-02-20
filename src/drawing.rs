@@ -2,6 +2,7 @@
 
 use crate::PagedTableResult;
 use crate::Result;
+use crate::TaggedCellHook;
 use crate::constants::*;
 use crate::drawing_utils::{
     BorderDrawingMode, calculate_cell_width, draw_rectangle_fill,
@@ -22,6 +23,7 @@ pub fn generate_table_operations(
     table: &Table,
     layout: &TableLayout,
     position: (f32, f32),
+    mut hook: Option<&mut dyn TaggedCellHook>,
 ) -> Result<Vec<Object>> {
     let mut operations = Vec::new();
     let (start_x, start_y) = position;
@@ -67,6 +69,13 @@ pub fn generate_table_operations(
             if col_idx >= layout.column_widths.len() {
                 break;
             }
+            let is_header = row_idx < table.header_rows;
+
+            if let Some(cell_hook) = hook.as_deref_mut() {
+                operations.extend(operations_to_objects(cell_hook.begin_cell(
+                    row_idx, col_idx, is_header,
+                )));
+            }
 
             // Calculate the total width for cells with colspan
             let cell_width = calculate_cell_width(col_idx, cell.colspan, &layout.column_widths);
@@ -88,6 +97,12 @@ pub fn generate_table_operations(
             operations.extend(draw_cell_text(
                 cell, table, current_x, current_y, cell_width, row_height,
             )?);
+
+            if let Some(cell_hook) = hook.as_deref_mut() {
+                operations.extend(operations_to_objects(cell_hook.end_cell(
+                    row_idx, col_idx, is_header,
+                )));
+            }
 
             current_x += cell_width;
             col_idx += cell.colspan.max(1);
@@ -379,6 +394,15 @@ fn draw_cell_text(
     Ok(objects)
 }
 
+fn operations_to_objects(ops: Vec<Operation>) -> Vec<Object> {
+    let mut out = Vec::new();
+    for op in ops {
+        out.push(Object::Name(op.operator.as_bytes().to_vec()));
+        out.extend(op.operands);
+    }
+    out
+}
+
 /// Add operations to a page in the document
 pub fn add_operations_to_page(
     doc: &mut Document,
@@ -420,6 +444,7 @@ pub fn draw_table_paginated(
     table: &Table,
     layout: &TableLayout,
     position: (f32, f32),
+    mut hook: Option<&mut dyn TaggedCellHook>,
 ) -> Result<PagedTableResult> {
     debug!(
         "Drawing paginated table with {} rows, {} header rows",
@@ -463,6 +488,7 @@ pub fn draw_table_paginated(
                         page_height - top_margin
                     },
                 ),
+                &mut hook,
             )?;
 
             // Create new page
@@ -503,6 +529,7 @@ pub fn draw_table_paginated(
             layout,
             &rows_on_current_page,
             (start_x, page_y),
+            &mut hook,
         )?;
     }
 
@@ -588,6 +615,7 @@ fn draw_rows_subset(
     layout: &TableLayout,
     row_indices: &[usize],
     position: (f32, f32),
+    hook: &mut Option<&mut dyn TaggedCellHook>,
 ) -> Result<()> {
     if row_indices.is_empty() {
         return Ok(());
@@ -641,6 +669,13 @@ fn draw_rows_subset(
             if col_idx >= column_count {
                 break;
             }
+            let is_header = row_idx < table.header_rows;
+
+            if let Some(cell_hook) = hook.as_deref_mut() {
+                operations.extend(operations_to_objects(cell_hook.begin_cell(
+                    row_idx, col_idx, is_header,
+                )));
+            }
 
             // Calculate the total width for cells with colspan
             let cell_width = calculate_cell_width(col_idx, cell.colspan, &layout.column_widths);
@@ -662,6 +697,12 @@ fn draw_rows_subset(
             operations.extend(draw_cell_text(
                 cell, table, current_x, current_y, cell_width, row_height,
             )?);
+
+            if let Some(cell_hook) = hook.as_deref_mut() {
+                operations.extend(operations_to_objects(cell_hook.end_cell(
+                    row_idx, col_idx, is_header,
+                )));
+            }
 
             current_x += cell_width;
             col_idx += cell.colspan.max(1);

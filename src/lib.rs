@@ -4,6 +4,7 @@
 //! with support for automatic sizing, custom styling, and flexible layouts.
 
 use lopdf::{Document, Object, ObjectId};
+use lopdf::content::Operation;
 use tracing::{debug, instrument, trace};
 
 mod constants;
@@ -27,6 +28,12 @@ pub use style::{
     Alignment, BorderStyle, CellStyle, Color, RowStyle, TableStyle, VerticalAlignment,
 };
 pub use table::{Cell, ColumnWidth, Row, Table};
+
+/// Optional hook for injecting tagged content around table cells.
+pub trait TaggedCellHook {
+    fn begin_cell(&mut self, row: usize, col: usize, is_header: bool) -> Vec<Operation>;
+    fn end_cell(&mut self, row: usize, col: usize, is_header: bool) -> Vec<Operation>;
+}
 
 /// Result of drawing a paginated table
 #[derive(Debug, Clone)]
@@ -81,6 +88,28 @@ pub trait TableDrawing {
         table: Table,
         position: (f32, f32),
     ) -> Result<PagedTableResult>;
+
+    /// Draw a table with an optional tagged-cell hook.
+    ///
+    /// Existing rendering behavior is unchanged when `hook` is `None`.
+    fn draw_table_with_hook(
+        &mut self,
+        page_id: ObjectId,
+        table: Table,
+        position: (f32, f32),
+        hook: Option<&mut dyn TaggedCellHook>,
+    ) -> Result<()>;
+
+    /// Draw a paginated table with an optional tagged-cell hook.
+    ///
+    /// Existing rendering behavior is unchanged when `hook` is `None`.
+    fn draw_table_with_pagination_and_hook(
+        &mut self,
+        page_id: ObjectId,
+        table: Table,
+        position: (f32, f32),
+        hook: Option<&mut dyn TaggedCellHook>,
+    ) -> Result<PagedTableResult>;
 }
 
 impl TableDrawing for Document {
@@ -93,7 +122,7 @@ impl TableDrawing for Document {
         trace!("Calculated layout: {:?}", layout);
 
         // Generate drawing operations
-        let operations = drawing::generate_table_operations(&table, &layout, position)?;
+        let operations = drawing::generate_table_operations(&table, &layout, position, None)?;
 
         // Add content to page
         drawing::add_operations_to_page(self, page_id, operations)?;
@@ -110,7 +139,7 @@ impl TableDrawing for Document {
 
     fn create_table_content(&self, table: &Table, position: (f32, f32)) -> Result<Vec<Object>> {
         let layout = layout::calculate_layout(table)?;
-        drawing::generate_table_operations(table, &layout, position)
+        drawing::generate_table_operations(table, &layout, position, None)
     }
 
     #[instrument(skip(self, table), fields(table_rows = table.rows.len()))]
@@ -127,15 +156,42 @@ impl TableDrawing for Document {
         trace!("Calculated layout: {:?}", layout);
 
         // Generate paginated drawing operations
-        let result = drawing::draw_table_paginated(self, page_id, &table, &layout, position)?;
+        let result = drawing::draw_table_paginated(self, page_id, &table, &layout, position, None)?;
 
         Ok(result)
+    }
+
+    fn draw_table_with_hook(
+        &mut self,
+        page_id: ObjectId,
+        table: Table,
+        position: (f32, f32),
+        hook: Option<&mut dyn TaggedCellHook>,
+    ) -> Result<()> {
+        debug!("Drawing table with hook at position {:?}", position);
+        let layout = layout::calculate_layout(&table)?;
+        let operations = drawing::generate_table_operations(&table, &layout, position, hook)?;
+        drawing::add_operations_to_page(self, page_id, operations)?;
+        Ok(())
+    }
+
+    fn draw_table_with_pagination_and_hook(
+        &mut self,
+        page_id: ObjectId,
+        table: Table,
+        position: (f32, f32),
+        hook: Option<&mut dyn TaggedCellHook>,
+    ) -> Result<PagedTableResult> {
+        debug!("Drawing paginated table with hook at position {:?}", position);
+        let layout = layout::calculate_layout(&table)?;
+        drawing::draw_table_paginated(self, page_id, &table, &layout, position, hook)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::content::Operation;
     use lopdf::{Document, Object, dictionary};
 
     #[test]
@@ -329,5 +385,74 @@ mod tests {
             regular_layout.total_width,
             bold_layout.total_width
         );
+    }
+
+    #[test]
+    fn test_tagged_cell_hook_is_invoked() {
+        struct Hook {
+            begin_calls: usize,
+            end_calls: usize,
+        }
+
+        impl TaggedCellHook for Hook {
+            fn begin_cell(&mut self, _row: usize, _col: usize, _is_header: bool) -> Vec<Operation> {
+                self.begin_calls += 1;
+                vec![]
+            }
+
+            fn end_cell(&mut self, _row: usize, _col: usize, _is_header: bool) -> Vec<Operation> {
+                self.end_calls += 1;
+                vec![]
+            }
+        }
+
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![],
+            "Count" => 0,
+        });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        if let Ok(Object::Dictionary(pages)) = doc.get_object_mut(pages_id) {
+            if let Ok(Object::Array(kids)) = pages.get_mut(b"Kids") {
+                kids.push(page_id.into());
+            }
+            pages.set("Count", Object::Integer(1));
+        }
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+            page.set("Resources", resources_id);
+        }
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let table = Table::new()
+            .add_row(Row::new(vec![Cell::new("H1"), Cell::new("H2")]))
+            .add_row(Row::new(vec![Cell::new("A1"), Cell::new("A2")]))
+            .with_header_rows(1);
+
+        let mut hook = Hook {
+            begin_calls: 0,
+            end_calls: 0,
+        };
+        doc.draw_table_with_hook(page_id, table, (50.0, 750.0), Some(&mut hook))
+            .expect("table draw with hook should succeed");
+
+        assert_eq!(hook.begin_calls, 4);
+        assert_eq!(hook.end_calls, 4);
     }
 }
