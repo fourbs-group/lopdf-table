@@ -5,11 +5,12 @@ use crate::Result;
 use crate::TaggedCellHook;
 use crate::constants::*;
 use crate::drawing_utils::{
-    BorderDrawingMode, calculate_cell_width, draw_rectangle_fill,
-    draw_table_borders as draw_borders_util, objects_to_operations,
+    BorderDrawingMode, calculate_cell_width, draw_horizontal_line, draw_rectangle_fill,
+    draw_table_borders as draw_borders_util, draw_vertical_line, objects_to_operations,
+    set_stroke_style,
 };
 use crate::layout::TableLayout;
-use crate::style::{Alignment, Color, VerticalAlignment};
+use crate::style::{Alignment, BorderStyle, Color, VerticalAlignment};
 use crate::table::Table;
 use lopdf::{
     Document, Object, ObjectId, StringFormat,
@@ -32,6 +33,52 @@ fn wrap_objects_as_artifact(mut objects: Vec<Object>) -> Vec<Object> {
     wrapped.append(&mut objects);
     wrapped.push(Object::Name(b"EMC".to_vec()));
     wrapped
+}
+
+fn draw_cell_border_overrides(
+    cell_style: &crate::style::CellStyle,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Vec<Object> {
+    let mut ops = Vec::new();
+
+    let append_side = |ops: &mut Vec<Object>,
+                       border: Option<(BorderStyle, f32, Color)>,
+                       side_ops: Vec<Object>| {
+        if let Some((style, line_width, color)) = border {
+            if style == BorderStyle::None {
+                return;
+            }
+            // Dashed/dotted specific stroking is not yet implemented; treat as visible stroke.
+            ops.extend(set_stroke_style(color, line_width));
+            ops.extend(side_ops);
+        }
+    };
+
+    append_side(
+        &mut ops,
+        cell_style.border_left,
+        draw_vertical_line(x, y, y - height),
+    );
+    append_side(
+        &mut ops,
+        cell_style.border_right,
+        draw_vertical_line(x + width, y, y - height),
+    );
+    append_side(
+        &mut ops,
+        cell_style.border_top,
+        draw_horizontal_line(x, x + width, y),
+    );
+    append_side(
+        &mut ops,
+        cell_style.border_bottom,
+        draw_horizontal_line(x, x + width, y - height),
+    );
+
+    ops
 }
 
 /// Generate PDF operations for drawing a table
@@ -99,9 +146,9 @@ pub fn generate_table_operations(
             let is_header = row_idx < table.header_rows;
 
             if let Some(cell_hook) = hook.as_deref_mut() {
-                operations.extend(operations_to_objects(cell_hook.begin_cell(
-                    row_idx, col_idx, is_header,
-                )));
+                operations.extend(operations_to_objects(
+                    cell_hook.begin_cell(row_idx, col_idx, is_header),
+                ));
             }
 
             // Calculate the total width for cells with colspan
@@ -126,9 +173,21 @@ pub fn generate_table_operations(
             )?);
 
             if let Some(cell_hook) = hook.as_deref_mut() {
-                operations.extend(operations_to_objects(cell_hook.end_cell(
-                    row_idx, col_idx, is_header,
-                )));
+                operations.extend(operations_to_objects(
+                    cell_hook.end_cell(row_idx, col_idx, is_header),
+                ));
+            }
+
+            // Draw per-cell border overrides after semantic cell content so they remain visual-only.
+            if let Some(ref cell_style) = cell.style {
+                let cell_border_ops = draw_cell_border_overrides(
+                    cell_style, current_x, current_y, cell_width, row_height,
+                );
+                if artifactize_non_semantic {
+                    operations.extend(wrap_objects_as_artifact(cell_border_ops));
+                } else {
+                    operations.extend(cell_border_ops);
+                }
             }
 
             current_x += cell_width;
@@ -715,9 +774,9 @@ fn draw_rows_subset(
             let is_header = row_idx < table.header_rows;
 
             if let Some(cell_hook) = hook.as_deref_mut() {
-                operations.extend(operations_to_objects(cell_hook.begin_cell(
-                    row_idx, col_idx, is_header,
-                )));
+                operations.extend(operations_to_objects(
+                    cell_hook.begin_cell(row_idx, col_idx, is_header),
+                ));
             }
 
             // Calculate the total width for cells with colspan
@@ -742,9 +801,21 @@ fn draw_rows_subset(
             )?);
 
             if let Some(cell_hook) = hook.as_deref_mut() {
-                operations.extend(operations_to_objects(cell_hook.end_cell(
-                    row_idx, col_idx, is_header,
-                )));
+                operations.extend(operations_to_objects(
+                    cell_hook.end_cell(row_idx, col_idx, is_header),
+                ));
+            }
+
+            // Draw per-cell border overrides after semantic cell content so they remain visual-only.
+            if let Some(ref cell_style) = cell.style {
+                let cell_border_ops = draw_cell_border_overrides(
+                    cell_style, current_x, current_y, cell_width, row_height,
+                );
+                if artifactize_non_semantic {
+                    operations.extend(wrap_objects_as_artifact(cell_border_ops));
+                } else {
+                    operations.extend(cell_border_ops);
+                }
             }
 
             current_x += cell_width;

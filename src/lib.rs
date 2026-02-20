@@ -3,8 +3,8 @@
 //! This library provides an ergonomic API for creating tables in PDF documents
 //! with support for automatic sizing, custom styling, and flexible layouts.
 
-use lopdf::{Document, Object, ObjectId};
 use lopdf::content::Operation;
+use lopdf::{Document, Object, ObjectId};
 use tracing::{debug, instrument, trace};
 
 mod constants;
@@ -182,7 +182,10 @@ impl TableDrawing for Document {
         position: (f32, f32),
         hook: Option<&mut dyn TaggedCellHook>,
     ) -> Result<PagedTableResult> {
-        debug!("Drawing paginated table with hook at position {:?}", position);
+        debug!(
+            "Drawing paginated table with hook at position {:?}",
+            position
+        );
         let layout = layout::calculate_layout(&table)?;
         drawing::draw_table_paginated(self, page_id, &table, &layout, position, hook)
     }
@@ -318,6 +321,38 @@ mod tests {
         }
     }
 
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() <= 0.001
+    }
+
+    fn op_has_rgb(op: &Operation, operator: &str, color: Color) -> bool {
+        op.operator == operator
+            && op.operands.len() == 3
+            && object_to_f32(&op.operands[0]).map_or(false, |v| approx_eq(v, color.r))
+            && object_to_f32(&op.operands[1]).map_or(false, |v| approx_eq(v, color.g))
+            && object_to_f32(&op.operands[2]).map_or(false, |v| approx_eq(v, color.b))
+    }
+
+    fn op_has_line_width(op: &Operation, width: f32) -> bool {
+        op.operator == "w"
+            && op.operands.len() == 1
+            && object_to_f32(&op.operands[0]).map_or(false, |v| approx_eq(v, width))
+    }
+
+    fn has_stroke_style(operations: &[Operation], color: Color, width: f32) -> bool {
+        operations.iter().any(|op| op_has_rgb(op, "RG", color))
+            && operations.iter().any(|op| op_has_line_width(op, width))
+    }
+
+    fn page_content_operations(doc: &Document, page_id: ObjectId) -> Vec<Operation> {
+        let bytes = doc
+            .get_page_content(page_id)
+            .expect("page content should be readable");
+        Content::decode(&bytes)
+            .expect("page content should decode")
+            .operations
+    }
+
     fn page_rect_extents(doc: &Document, page_id: ObjectId) -> Option<RectExtents> {
         let bytes = doc.get_page_content(page_id).ok()?;
         let content = Content::decode(&bytes).ok()?;
@@ -344,6 +379,56 @@ mod tests {
         } else {
             None
         }
+    }
+
+    #[test]
+    fn test_cell_border_overrides_emit_custom_stroke_ops() {
+        let custom_color = Color::rgb(0.11, 0.22, 0.33);
+        let custom_width = 2.75;
+        let header_style = CellStyle {
+            border_top: Some((BorderStyle::Solid, custom_width, custom_color)),
+            ..Default::default()
+        };
+
+        let table = Table::new()
+            .with_pixel_widths(vec![180.0])
+            .add_row(Row::new(vec![Cell::new("Header").with_style(header_style)]));
+
+        let objects = Document::with_version("1.7")
+            .create_table_content(&table, (50.0, 750.0))
+            .expect("table content should be generated");
+        let operations = crate::drawing_utils::objects_to_operations(&objects);
+
+        assert!(
+            has_stroke_style(&operations, custom_color, custom_width),
+            "expected custom border stroke ops (color + width) to be emitted"
+        );
+    }
+
+    #[test]
+    fn test_cell_background_fill_ops_still_emitted_with_styled_cells() {
+        let bg_color = Color::rgb(0.13, 0.27, 0.71);
+        let style = CellStyle {
+            background_color: Some(bg_color),
+            ..Default::default()
+        };
+
+        let table = Table::new()
+            .with_pixel_widths(vec![180.0])
+            .add_row(Row::new(vec![Cell::new("Header").with_style(style)]));
+
+        let objects = Document::with_version("1.7")
+            .create_table_content(&table, (50.0, 750.0))
+            .expect("table content should be generated");
+        let operations = crate::drawing_utils::objects_to_operations(&objects);
+
+        let has_bg_color = operations.iter().any(|op| op_has_rgb(op, "rg", bg_color));
+        let has_fill = operations.iter().any(|op| op.operator == "f");
+
+        assert!(
+            has_bg_color && has_fill,
+            "expected background color fill ops to be present for styled cells"
+        );
     }
 
     #[test]
@@ -610,12 +695,7 @@ mod tests {
         struct NoopHook;
 
         impl TaggedCellHook for NoopHook {
-            fn begin_cell(
-                &mut self,
-                _row: usize,
-                _col: usize,
-                _is_header: bool,
-            ) -> Vec<Operation> {
+            fn begin_cell(&mut self, _row: usize, _col: usize, _is_header: bool) -> Vec<Operation> {
                 vec![]
             }
 
@@ -743,7 +823,8 @@ mod tests {
             .add_row(Row::new(vec![Cell::new("Header")]).with_height(30.0));
 
         for row in 0..120 {
-            table = table.add_row(Row::new(vec![Cell::new(format!("row-{row}"))]).with_height(30.0));
+            table =
+                table.add_row(Row::new(vec![Cell::new(format!("row-{row}"))]).with_height(30.0));
         }
 
         let result = doc
@@ -758,8 +839,8 @@ mod tests {
 
         let first_page_extents =
             page_rect_extents(&doc, result.page_ids[0]).expect("first page should have rectangles");
-        let second_page_extents =
-            page_rect_extents(&doc, result.page_ids[1]).expect("second page should have rectangles");
+        let second_page_extents = page_rect_extents(&doc, result.page_ids[1])
+            .expect("second page should have rectangles");
 
         assert!(
             (first_page_extents.max_top - START_Y).abs() <= EPS,
@@ -777,6 +858,91 @@ mod tests {
             "expected second page min bottom >= {}, got {}",
             BOTTOM_MARGIN - EPS,
             second_page_extents.min_bottom
+        );
+    }
+
+    #[test]
+    fn test_paginated_repeated_header_border_overrides_render_on_continuation_pages() {
+        const PAGE_HEIGHT: f32 = 842.0;
+        const TOP_MARGIN: f32 = 50.0;
+        const BOTTOM_MARGIN: f32 = 50.0;
+        const START_Y: f32 = 500.0;
+        let header_border_color = Color::rgb(0.07, 0.16, 0.29);
+        let header_border_width = 2.5;
+
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![],
+            "Count" => 0,
+        });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), PAGE_HEIGHT.into()],
+        });
+        if let Ok(Object::Dictionary(pages)) = doc.get_object_mut(pages_id) {
+            if let Ok(Object::Array(kids)) = pages.get_mut(b"Kids") {
+                kids.push(page_id.into());
+            }
+            pages.set("Count", Object::Integer(1));
+        }
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+            page.set("Resources", resources_id);
+        }
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let mut table_style = TableStyle::default();
+        table_style.page_height = Some(PAGE_HEIGHT);
+        table_style.top_margin = TOP_MARGIN;
+        table_style.bottom_margin = BOTTOM_MARGIN;
+        table_style.repeat_headers = true;
+
+        let header_style = CellStyle {
+            border_top: Some((BorderStyle::Solid, header_border_width, header_border_color)),
+            border_bottom: Some((BorderStyle::Solid, header_border_width, header_border_color)),
+            ..Default::default()
+        };
+
+        let mut table = Table::new()
+            .with_style(table_style)
+            .with_header_rows(1)
+            .with_pixel_widths(vec![300.0])
+            .add_row(
+                Row::new(vec![Cell::new("Header").with_style(header_style)]).with_height(30.0),
+            );
+
+        for row in 0..120 {
+            table =
+                table.add_row(Row::new(vec![Cell::new(format!("row-{row}"))]).with_height(30.0));
+        }
+
+        let result = doc
+            .draw_table_with_pagination(page_id, table, (50.0, START_Y))
+            .expect("paginated table draw should succeed");
+
+        assert!(
+            result.page_ids.len() >= 2,
+            "expected at least 2 pages, got {}",
+            result.page_ids.len()
+        );
+
+        let second_page_ops = page_content_operations(&doc, result.page_ids[1]);
+        assert!(
+            has_stroke_style(&second_page_ops, header_border_color, header_border_width),
+            "expected repeated header border override stroke ops on continuation page"
         );
     }
 }
