@@ -18,6 +18,22 @@ use lopdf::{
 };
 use tracing::{debug, trace};
 
+fn wrap_objects_as_artifact(mut objects: Vec<Object>) -> Vec<Object> {
+    if objects.is_empty() {
+        return objects;
+    }
+
+    let mut wrapped = Vec::with_capacity(objects.len() + 4);
+    wrapped.push(Object::Name(b"BDC".to_vec()));
+    wrapped.push(Object::Name(b"Artifact".to_vec()));
+    wrapped.push(Object::Dictionary(dictionary! {
+        "Subtype" => Object::Name(b"Layout".to_vec()),
+    }));
+    wrapped.append(&mut objects);
+    wrapped.push(Object::Name(b"EMC".to_vec()));
+    wrapped
+}
+
 /// Generate PDF operations for drawing a table
 pub fn generate_table_operations(
     table: &Table,
@@ -27,6 +43,7 @@ pub fn generate_table_operations(
 ) -> Result<Vec<Object>> {
     let mut operations = Vec::new();
     let (start_x, start_y) = position;
+    let artifactize_non_semantic = hook.is_some();
 
     debug!(
         "Generating operations for table at ({}, {})",
@@ -35,13 +52,18 @@ pub fn generate_table_operations(
 
     // Draw table background if specified
     if let Some(bg_color) = &table.style.background_color {
-        operations.extend(draw_rectangle_fill(
+        let bg_ops = draw_rectangle_fill(
             start_x,
             start_y - layout.total_height,
             layout.total_width,
             layout.total_height,
             *bg_color,
-        ));
+        );
+        if artifactize_non_semantic {
+            operations.extend(wrap_objects_as_artifact(bg_ops));
+        } else {
+            operations.extend(bg_ops);
+        }
     }
 
     // Draw cells and content
@@ -54,13 +76,18 @@ pub fn generate_table_operations(
         // Draw row background if specified
         if let Some(ref row_style) = row.style {
             if let Some(bg_color) = row_style.background_color {
-                operations.extend(draw_rectangle_fill(
+                let row_bg_ops = draw_rectangle_fill(
                     start_x,
                     current_y - row_height,
                     layout.total_width,
                     row_height,
                     bg_color,
-                ));
+                );
+                if artifactize_non_semantic {
+                    operations.extend(wrap_objects_as_artifact(row_bg_ops));
+                } else {
+                    operations.extend(row_bg_ops);
+                }
             }
         }
 
@@ -112,7 +139,12 @@ pub fn generate_table_operations(
     }
 
     // Draw table borders
-    operations.extend(draw_table_borders(table, layout, position));
+    let border_ops = draw_table_borders(table, layout, position);
+    if artifactize_non_semantic {
+        operations.extend(wrap_objects_as_artifact(border_ops));
+    } else {
+        operations.extend(border_ops);
+    }
 
     trace!("Generated {} operations", operations.len());
     Ok(operations)
@@ -626,6 +658,7 @@ fn draw_rows_subset(
     let mut operations = Vec::new();
     let (start_x, start_y) = position;
     let mut current_y = start_y;
+    let artifactize_non_semantic = hook.is_some();
 
     // Calculate which columns to draw (all columns for now)
     let column_count = table.column_count();
@@ -634,13 +667,18 @@ fn draw_rows_subset(
     if row_indices.contains(&0) {
         if let Some(bg_color) = &table.style.background_color {
             let subset_height: f32 = row_indices.iter().map(|&i| layout.row_heights[i]).sum();
-            operations.extend(draw_rectangle_fill(
+            let bg_ops = draw_rectangle_fill(
                 start_x,
                 start_y - subset_height,
                 layout.total_width,
                 subset_height,
                 *bg_color,
-            ));
+            );
+            if artifactize_non_semantic {
+                operations.extend(wrap_objects_as_artifact(bg_ops));
+            } else {
+                operations.extend(bg_ops);
+            }
         }
     }
 
@@ -653,13 +691,18 @@ fn draw_rows_subset(
         // Draw row background if specified
         if let Some(ref row_style) = row.style {
             if let Some(bg_color) = row_style.background_color {
-                operations.extend(draw_rectangle_fill(
+                let row_bg_ops = draw_rectangle_fill(
                     start_x,
                     current_y - row_height,
                     layout.total_width,
                     row_height,
                     bg_color,
-                ));
+                );
+                if artifactize_non_semantic {
+                    operations.extend(wrap_objects_as_artifact(row_bg_ops));
+                } else {
+                    operations.extend(row_bg_ops);
+                }
             }
         }
 
@@ -712,7 +755,12 @@ fn draw_rows_subset(
     }
 
     // Draw borders for this subset
-    operations.extend(draw_subset_borders(table, layout, row_indices, position));
+    let border_ops = draw_subset_borders(table, layout, row_indices, position);
+    if artifactize_non_semantic {
+        operations.extend(wrap_objects_as_artifact(border_ops));
+    } else {
+        operations.extend(border_ops);
+    }
 
     // Add operations to page
     add_operations_to_page(doc, page_id, operations)?;

@@ -559,7 +559,90 @@ mod tests {
             .filter(|op| op.operator == "EMC")
             .count();
 
-        assert_eq!(bdc_count, 4);
-        assert_eq!(emc_count, 4);
+        assert!(bdc_count >= 4);
+        assert_eq!(bdc_count, emc_count);
+    }
+
+    #[test]
+    fn test_hook_mode_wraps_non_semantic_ops_as_artifact() {
+        struct NoopHook;
+
+        impl TaggedCellHook for NoopHook {
+            fn begin_cell(
+                &mut self,
+                _row: usize,
+                _col: usize,
+                _is_header: bool,
+            ) -> Vec<Operation> {
+                vec![]
+            }
+
+            fn end_cell(&mut self, _row: usize, _col: usize, _is_header: bool) -> Vec<Operation> {
+                vec![]
+            }
+        }
+
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![],
+            "Count" => 0,
+        });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        if let Ok(Object::Dictionary(pages)) = doc.get_object_mut(pages_id) {
+            if let Ok(Object::Array(kids)) = pages.get_mut(b"Kids") {
+                kids.push(page_id.into());
+            }
+            pages.set("Count", Object::Integer(1));
+        }
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+            page.set("Resources", resources_id);
+        }
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let table = Table::new()
+            .with_border(0.5)
+            .add_row(Row::new(vec![Cell::new("H1"), Cell::new("H2")]))
+            .add_row(Row::new(vec![Cell::new("A1"), Cell::new("A2")]))
+            .with_header_rows(1);
+
+        let mut hook = NoopHook;
+        doc.draw_table_with_hook(page_id, table, (50.0, 750.0), Some(&mut hook))
+            .expect("table draw with hook should succeed");
+
+        let bytes = doc
+            .get_page_content(page_id)
+            .expect("page content should be readable");
+        let decoded = Content::decode(&bytes).expect("content should decode");
+
+        let has_artifact_bdc = decoded.operations.iter().any(|op| {
+            op.operator == "BDC"
+                && op
+                    .operands
+                    .first()
+                    .and_then(|operand| operand.as_name().ok())
+                    == Some(b"Artifact".as_slice())
+        });
+
+        assert!(
+            has_artifact_bdc,
+            "expected non-semantic table drawing ops to be wrapped as Artifact"
+        );
     }
 }
