@@ -31,6 +31,9 @@ pub struct Table {
     /// Font metrics for accurate text measurement and Unicode encoding.
     /// When set, enables font-aware text wrapping and glyph ID encoding.
     pub font_metrics: Option<Arc<dyn FontMetrics>>,
+    /// Bold font metrics for accurate bold text measurement and Unicode encoding.
+    /// When set, bold cells can use a dedicated embedded bold font.
+    pub bold_font_metrics: Option<Arc<dyn FontMetrics>>,
 }
 
 impl std::fmt::Debug for Table {
@@ -42,6 +45,10 @@ impl std::fmt::Debug for Table {
             .field("total_width", &self.total_width)
             .field("header_rows", &self.header_rows)
             .field("font_metrics", &self.font_metrics.as_ref().map(|_| "..."))
+            .field(
+                "bold_font_metrics",
+                &self.bold_font_metrics.as_ref().map(|_| "..."),
+            )
             .finish()
     }
 }
@@ -56,6 +63,7 @@ impl Table {
             total_width: None,
             header_rows: 0,
             font_metrics: None,
+            bold_font_metrics: None,
         }
     }
 
@@ -109,6 +117,16 @@ impl Table {
     /// using the actual font data instead of heuristic estimates.
     pub fn with_font_metrics(mut self, metrics: impl FontMetrics + 'static) -> Self {
         self.font_metrics = Some(Arc::new(metrics));
+        self
+    }
+
+    /// Set bold font metrics for accurate bold text measurement and Unicode encoding.
+    ///
+    /// When font metrics are provided along with `embedded_font_resource_name_bold`
+    /// on the table style, bold cell text will be encoded as glyph IDs and measured
+    /// using the bold font data.
+    pub fn with_bold_font_metrics(mut self, metrics: impl FontMetrics + 'static) -> Self {
+        self.bold_font_metrics = Some(Arc::new(metrics));
         self
     }
 
@@ -337,5 +355,27 @@ mod tests {
         // Test with default (no font specified)
         let cell_default = Cell::new("Default font");
         assert!(cell_default.style.is_none());
+    }
+
+    #[test]
+    fn test_with_bold_font_metrics_builder() {
+        struct DummyMetrics;
+
+        impl crate::font::FontMetrics for DummyMetrics {
+            fn char_width(&self, _ch: char, _font_size: f32) -> f32 {
+                5.0
+            }
+
+            fn text_width(&self, text: &str, _font_size: f32) -> f32 {
+                text.chars().count() as f32 * 5.0
+            }
+
+            fn encode_text(&self, text: &str) -> Vec<u8> {
+                vec![0; text.chars().count() * 2]
+            }
+        }
+
+        let table = Table::new().with_bold_font_metrics(DummyMetrics);
+        assert!(table.bold_font_metrics.is_some());
     }
 }

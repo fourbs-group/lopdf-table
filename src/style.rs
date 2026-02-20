@@ -151,6 +151,9 @@ pub struct TableStyle {
     /// When set together with `font_metrics` on the Table, text will be
     /// encoded as glyph IDs and rendered using this font resource.
     pub embedded_font_resource_name: Option<String>,
+    /// PDF resource name for a bold embedded font (e.g., "EF0B").
+    /// When set and a cell is marked bold, this font resource is used.
+    pub embedded_font_resource_name_bold: Option<String>,
 }
 
 impl Default for TableStyle {
@@ -168,6 +171,7 @@ impl Default for TableStyle {
             bottom_margin: DEFAULT_MARGIN,
             repeat_headers: true,
             embedded_font_resource_name: None,
+            embedded_font_resource_name_bold: None,
         }
     }
 }

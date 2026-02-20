@@ -108,9 +108,32 @@ fn draw_table_borders(table: &Table, layout: &TableLayout, position: (f32, f32))
     draw_borders_util(table, layout, position, BorderDrawingMode::Full, None)
 }
 
-/// Estimate text width, using font metrics when available
-fn measure_text_width(text: &str, font_size: f32, table: &Table) -> f32 {
-    if let Some(ref metrics) = table.font_metrics {
+fn cell_is_bold(cell: &crate::table::Cell) -> bool {
+    cell.style.as_ref().map(|s| s.bold).unwrap_or(false)
+}
+
+fn metrics_for_cell<'a>(
+    table: &'a Table,
+    cell: &crate::table::Cell,
+) -> Option<&'a dyn crate::font::FontMetrics> {
+    if cell_is_bold(cell) {
+        table
+            .bold_font_metrics
+            .as_ref()
+            .map(|m| m.as_ref())
+            .or(table.font_metrics.as_ref().map(|m| m.as_ref()))
+    } else {
+        table.font_metrics.as_ref().map(|m| m.as_ref())
+    }
+}
+
+/// Estimate text width, using selected font metrics when available
+fn measure_text_width(
+    text: &str,
+    font_size: f32,
+    metrics: Option<&dyn crate::font::FontMetrics>,
+) -> f32 {
+    if let Some(metrics) = metrics {
         metrics.text_width(text, font_size)
     } else {
         text.chars().count() as f32 * font_size * DEFAULT_CHAR_WIDTH_RATIO
@@ -166,16 +189,13 @@ fn draw_cell_text_operations(
 
     // Calculate available width for text
     let available_width = width - padding.left - padding.right;
+    let metrics = metrics_for_cell(table, cell);
+    let is_bold = cell_is_bold(cell);
 
     // Wrap text if enabled
     let lines = if cell.text_wrap {
-        if let Some(ref metrics) = table.font_metrics {
-            crate::text::wrap_text_with_metrics(
-                &cell.content,
-                available_width,
-                font_size,
-                metrics.as_ref(),
-            )
+        if let Some(metrics) = metrics {
+            crate::text::wrap_text_with_metrics(&cell.content, available_width, font_size, metrics)
         } else {
             crate::text::wrap_text(&cell.content, available_width, font_size)
         }
@@ -200,15 +220,26 @@ fn draw_cell_text_operations(
 
     // Determine which font resource name to use:
     // 1. Cell's embedded_font_resource_name (if set)
-    // 2. Table style's embedded_font_resource_name (if set and metrics available)
-    // 3. Type1 font mapping (backward compatible)
+    // 2. Table style's embedded_font_resource_name_bold when bold (if set)
+    // 3. Table style's embedded_font_resource_name (if set)
+    // 4. Type1 font mapping (backward compatible)
     let embedded_font_name = cell
         .style
         .as_ref()
         .and_then(|s| s.embedded_font_resource_name.as_deref())
-        .or(table.style.embedded_font_resource_name.as_deref());
+        .or_else(|| {
+            if is_bold {
+                table
+                    .style
+                    .embedded_font_resource_name_bold
+                    .as_deref()
+                    .or(table.style.embedded_font_resource_name.as_deref())
+            } else {
+                table.style.embedded_font_resource_name.as_deref()
+            }
+        });
 
-    let use_encoded_text = embedded_font_name.is_some() && table.font_metrics.is_some();
+    let use_encoded_text = embedded_font_name.is_some() && metrics.is_some();
 
     let font_resource_name: String = if let Some(efn) = embedded_font_name {
         efn.to_string()
@@ -221,7 +252,7 @@ fn draw_cell_text_operations(
             .map(|s| s.as_str())
             .unwrap_or(&table.style.font_name);
 
-        if cell.style.as_ref().map_or(false, |s| s.bold) {
+        if is_bold {
             match base_font_name {
                 "Helvetica" => "F1-Bold",
                 "Courier" => "F2-Bold",
@@ -262,7 +293,7 @@ fn draw_cell_text_operations(
 
     // Draw each line of text
     for (line_idx, line) in lines.iter().enumerate() {
-        let estimated_text_width = measure_text_width(line, font_size, table);
+        let estimated_text_width = measure_text_width(line, font_size, metrics);
 
         let text_x = match alignment {
             Alignment::Left => x + padding.left,
@@ -276,7 +307,7 @@ fn draw_cell_text_operations(
             operations.push(Operation::new("Td", vec![text_x.into(), text_y.into()]));
         } else {
             let prev_line = &lines[line_idx - 1];
-            let prev_width = measure_text_width(prev_line, font_size, table);
+            let prev_width = measure_text_width(prev_line, font_size, metrics);
             let prev_x = match alignment {
                 Alignment::Left => x + padding.left,
                 Alignment::Center => x + width / 2.0 - prev_width / 2.0,
@@ -290,8 +321,7 @@ fn draw_cell_text_operations(
 
         // Show text: use glyph ID encoding for embedded fonts, string literal for Type1
         if use_encoded_text {
-            let metrics = table.font_metrics.as_ref().unwrap();
-            let encoded_bytes = metrics.encode_text(line);
+            let encoded_bytes = metrics.unwrap().encode_text(line);
             operations.push(Operation::new(
                 "Tj",
                 vec![Object::String(encoded_bytes, StringFormat::Hexadecimal)],

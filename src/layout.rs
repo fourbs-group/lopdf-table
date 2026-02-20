@@ -15,6 +15,25 @@ pub struct TableLayout {
     pub total_height: f32,
 }
 
+fn cell_is_bold(cell: &crate::table::Cell) -> bool {
+    cell.style.as_ref().map(|s| s.bold).unwrap_or(false)
+}
+
+fn metrics_for_cell<'a>(
+    table: &'a Table,
+    cell: &crate::table::Cell,
+) -> Option<&'a dyn crate::font::FontMetrics> {
+    if cell_is_bold(cell) {
+        table
+            .bold_font_metrics
+            .as_ref()
+            .map(|m| m.as_ref())
+            .or(table.font_metrics.as_ref().map(|m| m.as_ref()))
+    } else {
+        table.font_metrics.as_ref().map(|m| m.as_ref())
+    }
+}
+
 /// Calculate the layout for a table
 pub fn calculate_layout(table: &Table) -> Result<TableLayout> {
     table.validate()?;
@@ -149,11 +168,11 @@ fn estimate_column_content_width(table: &Table, col_idx: usize) -> f32 {
                 .and_then(|s| s.font_size)
                 .unwrap_or(table.style.default_font_size);
 
-            let estimated_width = if let Some(ref metrics) = table.font_metrics {
+            let estimated_width = if let Some(metrics) = metrics_for_cell(table, cell) {
                 crate::drawing_utils::estimate_text_width_with_metrics(
                     &cell.content,
                     font_size,
-                    metrics.as_ref(),
+                    metrics,
                 )
             } else {
                 crate::drawing_utils::estimate_text_width(&cell.content, font_size)
@@ -188,11 +207,11 @@ fn calculate_column_widths(table: &Table) -> Result<Vec<f32>> {
                 .and_then(|s| s.font_size)
                 .unwrap_or(table.style.default_font_size);
 
-            let estimated_width = if let Some(ref metrics) = table.font_metrics {
+            let estimated_width = if let Some(metrics) = metrics_for_cell(table, cell) {
                 crate::drawing_utils::estimate_text_width_with_metrics(
                     &cell.content,
                     font_size,
-                    metrics.as_ref(),
+                    metrics,
                 )
             } else {
                 crate::drawing_utils::estimate_text_width(&cell.content, font_size)
@@ -242,13 +261,13 @@ fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32
 
                 // Calculate height based on whether text wrapping is enabled
                 let estimated_height = if cell.text_wrap {
-                    if let Some(ref metrics) = table.font_metrics {
+                    if let Some(metrics) = metrics_for_cell(table, cell) {
                         crate::text::calculate_wrapped_text_height_with_metrics(
                             &cell.content,
                             available_width,
                             font_size,
                             DEFAULT_LINE_HEIGHT_MULTIPLIER,
-                            metrics.as_ref(),
+                            metrics,
                         )
                     } else {
                         crate::text::calculate_wrapped_text_height(

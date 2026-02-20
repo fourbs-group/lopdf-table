@@ -212,4 +212,122 @@ mod tests {
         let layout = layout::calculate_layout(&table);
         assert!(layout.is_ok());
     }
+
+    #[derive(Clone)]
+    struct MockMetrics {
+        char_width_pts: f32,
+    }
+
+    impl FontMetrics for MockMetrics {
+        fn char_width(&self, _ch: char, _font_size: f32) -> f32 {
+            self.char_width_pts
+        }
+
+        fn text_width(&self, text: &str, _font_size: f32) -> f32 {
+            text.chars().count() as f32 * self.char_width_pts
+        }
+
+        fn encode_text(&self, text: &str) -> Vec<u8> {
+            vec![0; text.chars().count() * 2]
+        }
+    }
+
+    fn extract_tf_font_names(objects: &[Object]) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut i = 0usize;
+        while i + 1 < objects.len() {
+            if let Object::Name(op) = &objects[i] {
+                if op.as_slice() == b"Tf" {
+                    if let Object::Name(font_name) = &objects[i + 1] {
+                        names.push(String::from_utf8_lossy(font_name).to_string());
+                    }
+                }
+            }
+            i += 1;
+        }
+        names
+    }
+
+    #[test]
+    fn test_embedded_bold_resource_selected_for_bold_cells() {
+        let mut style = TableStyle::default();
+        style.embedded_font_resource_name = Some("EF0".to_string());
+        style.embedded_font_resource_name_bold = Some("EF0B".to_string());
+
+        let table = Table::new()
+            .with_style(style)
+            .add_row(Row::new(vec![Cell::new("Header").bold()]))
+            .with_font_metrics(MockMetrics {
+                char_width_pts: 5.0,
+            })
+            .with_bold_font_metrics(MockMetrics {
+                char_width_pts: 9.0,
+            });
+
+        let ops = Document::with_version("1.5")
+            .create_table_content(&table, (50.0, 750.0))
+            .expect("table content should be generated");
+        let font_names = extract_tf_font_names(&ops);
+        assert!(
+            font_names.iter().any(|name| name == "EF0B"),
+            "expected bold embedded font resource EF0B, got: {:?}",
+            font_names
+        );
+    }
+
+    #[test]
+    fn test_embedded_regular_resource_used_as_bold_fallback() {
+        let mut style = TableStyle::default();
+        style.embedded_font_resource_name = Some("EF0".to_string());
+        style.embedded_font_resource_name_bold = None;
+
+        let table = Table::new()
+            .with_style(style)
+            .add_row(Row::new(vec![Cell::new("Header").bold()]))
+            .with_font_metrics(MockMetrics {
+                char_width_pts: 5.0,
+            });
+
+        let ops = Document::with_version("1.5")
+            .create_table_content(&table, (50.0, 750.0))
+            .expect("table content should be generated");
+        let font_names = extract_tf_font_names(&ops);
+        assert!(
+            font_names.iter().any(|name| name == "EF0"),
+            "expected embedded font fallback EF0, got: {:?}",
+            font_names
+        );
+    }
+
+    #[test]
+    fn test_layout_uses_bold_metrics_when_available() {
+        let bold_cell = Cell::new("WWWWWW").bold();
+
+        let table_regular_only = Table::new()
+            .add_row(Row::new(vec![bold_cell.clone()]))
+            .with_font_metrics(MockMetrics {
+                char_width_pts: 2.0,
+            });
+
+        let table_with_bold_metrics = Table::new()
+            .add_row(Row::new(vec![bold_cell]))
+            .with_font_metrics(MockMetrics {
+                char_width_pts: 2.0,
+            })
+            .with_bold_font_metrics(MockMetrics {
+                char_width_pts: 8.0,
+            });
+
+        let regular_layout = layout::calculate_layout(&table_regular_only)
+            .expect("layout should succeed with regular metrics only");
+        let bold_layout = layout::calculate_layout(&table_with_bold_metrics)
+            .expect("layout should succeed with bold metrics");
+
+        assert!(
+            bold_layout.total_width > regular_layout.total_width,
+            "expected bold metrics to increase width: regular={} bold={}",
+            regular_layout.total_width,
+            bold_layout.total_width
+        );
+    }
 }
