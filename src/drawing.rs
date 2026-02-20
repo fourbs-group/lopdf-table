@@ -89,6 +89,7 @@ pub fn generate_table_operations(
     mut hook: Option<&mut dyn TaggedCellHook>,
 ) -> Result<Vec<Object>> {
     let mut operations = Vec::new();
+    let mut cell_border_overlay_ops = Vec::new();
     let (start_x, start_y) = position;
     let artifactize_non_semantic = hook.is_some();
 
@@ -184,9 +185,9 @@ pub fn generate_table_operations(
                     cell_style, current_x, current_y, cell_width, row_height,
                 );
                 if artifactize_non_semantic {
-                    operations.extend(wrap_objects_as_artifact(cell_border_ops));
+                    cell_border_overlay_ops.extend(wrap_objects_as_artifact(cell_border_ops));
                 } else {
-                    operations.extend(cell_border_ops);
+                    cell_border_overlay_ops.extend(cell_border_ops);
                 }
             }
 
@@ -204,6 +205,7 @@ pub fn generate_table_operations(
     } else {
         operations.extend(border_ops);
     }
+    operations.extend(cell_border_overlay_ops);
 
     trace!("Generated {} operations", operations.len());
     Ok(operations)
@@ -715,6 +717,7 @@ fn draw_rows_subset(
     debug!("Drawing {} rows on page {:?}", row_indices.len(), page_id);
 
     let mut operations = Vec::new();
+    let mut cell_border_overlay_ops = Vec::new();
     let (start_x, start_y) = position;
     let mut current_y = start_y;
     let artifactize_non_semantic = hook.is_some();
@@ -812,9 +815,9 @@ fn draw_rows_subset(
                     cell_style, current_x, current_y, cell_width, row_height,
                 );
                 if artifactize_non_semantic {
-                    operations.extend(wrap_objects_as_artifact(cell_border_ops));
+                    cell_border_overlay_ops.extend(wrap_objects_as_artifact(cell_border_ops));
                 } else {
-                    operations.extend(cell_border_ops);
+                    cell_border_overlay_ops.extend(cell_border_ops);
                 }
             }
 
@@ -832,6 +835,7 @@ fn draw_rows_subset(
     } else {
         operations.extend(border_ops);
     }
+    operations.extend(cell_border_overlay_ops);
 
     // Add operations to page
     add_operations_to_page(doc, page_id, operations)?;

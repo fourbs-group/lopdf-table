@@ -432,6 +432,53 @@ mod tests {
     }
 
     #[test]
+    fn test_cell_border_overrides_are_emitted_after_table_grid_borders() {
+        let table_border_color = Color::rgb(0.7, 0.7, 0.7);
+        let custom_border_color = Color::rgb(0.11, 0.22, 0.33);
+        let border_width = 0.5;
+
+        let mut table_style = TableStyle::default();
+        table_style.border_color = table_border_color;
+        table_style.border_width = border_width;
+
+        let header_style = CellStyle {
+            border_top: Some((BorderStyle::Solid, border_width, custom_border_color)),
+            ..Default::default()
+        };
+
+        let table = Table::new()
+            .with_style(table_style)
+            .with_pixel_widths(vec![180.0])
+            .add_row(Row::new(vec![Cell::new("Header").with_style(header_style)]));
+
+        let objects = Document::with_version("1.7")
+            .create_table_content(&table, (50.0, 750.0))
+            .expect("table content should be generated");
+        let operations = crate::drawing_utils::objects_to_operations(&objects);
+
+        let last_table_border_idx = operations
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op_has_rgb(op, "RG", table_border_color))
+            .map(|(idx, _)| idx)
+            .last()
+            .expect("expected table border stroke color op");
+
+        let last_custom_border_idx = operations
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op_has_rgb(op, "RG", custom_border_color))
+            .map(|(idx, _)| idx)
+            .last()
+            .expect("expected custom border stroke color op");
+
+        assert!(
+            last_custom_border_idx > last_table_border_idx,
+            "expected custom border stroke ops to be emitted after table grid borders"
+        );
+    }
+
+    #[test]
     fn test_embedded_bold_resource_selected_for_bold_cells() {
         let mut style = TableStyle::default();
         style.embedded_font_resource_name = Some("EF0".to_string());
