@@ -27,7 +27,7 @@ fn wrap_objects_as_artifact(mut objects: Vec<Object>) -> Vec<Object> {
     wrapped.push(Object::Name(b"BDC".to_vec()));
     wrapped.push(Object::Name(b"Artifact".to_vec()));
     wrapped.push(Object::Dictionary(dictionary! {
-        "Subtype" => Object::Name(b"Layout".to_vec()),
+        "Type" => Object::Name(b"Layout".to_vec()),
     }));
     wrapped.append(&mut objects);
     wrapped.push(Object::Name(b"EMC".to_vec()));
