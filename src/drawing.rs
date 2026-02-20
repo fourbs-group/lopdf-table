@@ -6,8 +6,8 @@ use crate::TaggedCellHook;
 use crate::constants::*;
 use crate::drawing_utils::{
     BorderDrawingMode, calculate_cell_width, draw_horizontal_line, draw_rectangle_fill,
-    draw_table_borders as draw_borders_util, draw_vertical_line, objects_to_operations,
-    set_stroke_style,
+    draw_rectangle_stroke, draw_table_borders as draw_borders_util, draw_vertical_line,
+    objects_to_operations, set_stroke_style,
 };
 use crate::layout::TableLayout;
 use crate::style::{Alignment, BorderStyle, Color, VerticalAlignment};
@@ -43,6 +43,24 @@ fn draw_cell_border_overrides(
     height: f32,
 ) -> Vec<Object> {
     let mut ops = Vec::new();
+
+    // When all four sides share the same style, stroke as a single rectangle so
+    // corner joins match the default table grid rendering exactly.
+    if let (Some(left), Some(right), Some(top), Some(bottom)) = (
+        cell_style.border_left,
+        cell_style.border_right,
+        cell_style.border_top,
+        cell_style.border_bottom,
+    ) {
+        if left == right && right == top && top == bottom {
+            let (style, line_width, color) = top;
+            if style != BorderStyle::None {
+                ops.extend(set_stroke_style(color, line_width));
+                ops.extend(draw_rectangle_stroke(x, y - height, width, height));
+            }
+            return ops;
+        }
+    }
 
     let append_side = |ops: &mut Vec<Object>,
                        border: Option<(BorderStyle, f32, Color)>,
