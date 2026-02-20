@@ -514,7 +514,7 @@ pub fn draw_table_paginated(
                 &rows_on_current_page,
                 (
                     start_x,
-                    if rows_on_current_page[0] < table.header_rows {
+                    if page_ids.len() == 1 {
                         start_y
                     } else {
                         page_height - top_margin

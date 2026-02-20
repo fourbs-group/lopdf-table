@@ -304,6 +304,48 @@ mod tests {
         names
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct RectExtents {
+        max_top: f32,
+        min_bottom: f32,
+    }
+
+    fn object_to_f32(object: &Object) -> Option<f32> {
+        match object {
+            Object::Integer(v) => Some(*v as f32),
+            Object::Real(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    fn page_rect_extents(doc: &Document, page_id: ObjectId) -> Option<RectExtents> {
+        let bytes = doc.get_page_content(page_id).ok()?;
+        let content = Content::decode(&bytes).ok()?;
+        let mut max_top = f32::NEG_INFINITY;
+        let mut min_bottom = f32::INFINITY;
+        let mut found = false;
+
+        for op in content.operations {
+            if op.operator != "re" || op.operands.len() != 4 {
+                continue;
+            }
+            let y = object_to_f32(&op.operands[1])?;
+            let h = object_to_f32(&op.operands[3])?;
+            max_top = max_top.max(y + h);
+            min_bottom = min_bottom.min(y);
+            found = true;
+        }
+
+        if found {
+            Some(RectExtents {
+                max_top,
+                min_bottom,
+            })
+        } else {
+            None
+        }
+    }
+
     #[test]
     fn test_embedded_bold_resource_selected_for_bold_cells() {
         let mut style = TableStyle::default();
@@ -643,6 +685,98 @@ mod tests {
         assert!(
             has_artifact_bdc,
             "expected non-semantic table drawing ops to be wrapped as Artifact"
+        );
+    }
+
+    #[test]
+    fn test_paginated_table_continuation_pages_use_top_margin_anchor_with_repeated_headers() {
+        const PAGE_HEIGHT: f32 = 842.0;
+        const TOP_MARGIN: f32 = 50.0;
+        const BOTTOM_MARGIN: f32 = 50.0;
+        const START_Y: f32 = 500.0;
+        const EPS: f32 = 0.01;
+
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![],
+            "Count" => 0,
+        });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), PAGE_HEIGHT.into()],
+        });
+        if let Ok(Object::Dictionary(pages)) = doc.get_object_mut(pages_id) {
+            if let Ok(Object::Array(kids)) = pages.get_mut(b"Kids") {
+                kids.push(page_id.into());
+            }
+            pages.set("Count", Object::Integer(1));
+        }
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+            page.set("Resources", resources_id);
+        }
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let mut style = TableStyle::default();
+        style.page_height = Some(PAGE_HEIGHT);
+        style.top_margin = TOP_MARGIN;
+        style.bottom_margin = BOTTOM_MARGIN;
+        style.repeat_headers = true;
+
+        let mut table = Table::new()
+            .with_style(style)
+            .with_header_rows(1)
+            .with_pixel_widths(vec![300.0])
+            .add_row(Row::new(vec![Cell::new("Header")]).with_height(30.0));
+
+        for row in 0..120 {
+            table = table.add_row(Row::new(vec![Cell::new(format!("row-{row}"))]).with_height(30.0));
+        }
+
+        let result = doc
+            .draw_table_with_pagination(page_id, table, (50.0, START_Y))
+            .expect("paginated table draw should succeed");
+
+        assert!(
+            result.page_ids.len() >= 3,
+            "expected at least 3 pages, got {}",
+            result.page_ids.len()
+        );
+
+        let first_page_extents =
+            page_rect_extents(&doc, result.page_ids[0]).expect("first page should have rectangles");
+        let second_page_extents =
+            page_rect_extents(&doc, result.page_ids[1]).expect("second page should have rectangles");
+
+        assert!(
+            (first_page_extents.max_top - START_Y).abs() <= EPS,
+            "expected first page max top ~{START_Y}, got {}",
+            first_page_extents.max_top
+        );
+        assert!(
+            (second_page_extents.max_top - (PAGE_HEIGHT - TOP_MARGIN)).abs() <= EPS,
+            "expected second page max top ~{}, got {}",
+            PAGE_HEIGHT - TOP_MARGIN,
+            second_page_extents.max_top
+        );
+        assert!(
+            second_page_extents.min_bottom >= BOTTOM_MARGIN - EPS,
+            "expected second page min bottom >= {}, got {}",
+            BOTTOM_MARGIN - EPS,
+            second_page_extents.min_bottom
         );
     }
 }
