@@ -11,6 +11,8 @@ pub fn is_pdf_operator(name: &str) -> bool {
     match name {
         // Text operators
         "BT" | "ET" | "Tf" | "Td" | "Tj" | "TJ" | "Tm" => true,
+        // Marked-content operators
+        "BMC" | "BDC" | "EMC" | "MP" | "DP" | "BX" | "EX" => true,
         // Color operators
         "rg" | "RG" | "g" | "G" => true,
         // Graphics state save/restore and clipping

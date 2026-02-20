@@ -191,7 +191,7 @@ impl TableDrawing for Document {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lopdf::content::Operation;
+    use lopdf::content::{Content, Operation};
     use lopdf::{Document, Object, dictionary};
 
     #[test]
@@ -454,5 +454,112 @@ mod tests {
 
         assert_eq!(hook.begin_calls, 4);
         assert_eq!(hook.end_calls, 4);
+    }
+
+    #[test]
+    fn test_marked_content_tokens_parse_as_operators() {
+        let objects = vec![
+            Object::Name(b"BDC".to_vec()),
+            Object::Name(b"TH".to_vec()),
+            Object::Dictionary(dictionary! { "MCID" => 0 }),
+            Object::Name(b"BT".to_vec()),
+            Object::Name(b"ET".to_vec()),
+            Object::Name(b"EMC".to_vec()),
+        ];
+
+        let operations = crate::drawing_utils::objects_to_operations(&objects);
+        assert_eq!(operations.len(), 4);
+        assert_eq!(operations[0].operator, "BDC");
+        assert_eq!(operations[0].operands.len(), 2);
+        assert_eq!(operations[1].operator, "BT");
+        assert_eq!(operations[2].operator, "ET");
+        assert_eq!(operations[3].operator, "EMC");
+    }
+
+    #[test]
+    fn test_hook_generated_bdc_emc_appear_in_page_content() {
+        struct MarkedHook;
+
+        impl TaggedCellHook for MarkedHook {
+            fn begin_cell(&mut self, _row: usize, _col: usize, is_header: bool) -> Vec<Operation> {
+                vec![Operation::new(
+                    "BDC",
+                    vec![
+                        Object::Name(if is_header {
+                            b"TH".to_vec()
+                        } else {
+                            b"TD".to_vec()
+                        }),
+                        Object::Dictionary(dictionary! { "MCID" => 0 }),
+                    ],
+                )]
+            }
+
+            fn end_cell(&mut self, _row: usize, _col: usize, _is_header: bool) -> Vec<Operation> {
+                vec![Operation::new("EMC", vec![])]
+            }
+        }
+
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![],
+            "Count" => 0,
+        });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        if let Ok(Object::Dictionary(pages)) = doc.get_object_mut(pages_id) {
+            if let Ok(Object::Array(kids)) = pages.get_mut(b"Kids") {
+                kids.push(page_id.into());
+            }
+            pages.set("Count", Object::Integer(1));
+        }
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+            page.set("Resources", resources_id);
+        }
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let table = Table::new()
+            .add_row(Row::new(vec![Cell::new("H1"), Cell::new("H2")]))
+            .add_row(Row::new(vec![Cell::new("A1"), Cell::new("A2")]))
+            .with_header_rows(1);
+
+        let mut hook = MarkedHook;
+        doc.draw_table_with_hook(page_id, table, (50.0, 750.0), Some(&mut hook))
+            .expect("table draw with hook should succeed");
+
+        let bytes = doc
+            .get_page_content(page_id)
+            .expect("page content should be readable");
+        let decoded = Content::decode(&bytes).expect("content should decode");
+
+        let bdc_count = decoded
+            .operations
+            .iter()
+            .filter(|op| op.operator == "BDC")
+            .count();
+        let emc_count = decoded
+            .operations
+            .iter()
+            .filter(|op| op.operator == "EMC")
+            .count();
+
+        assert_eq!(bdc_count, 4);
+        assert_eq!(emc_count, 4);
     }
 }
