@@ -11,13 +11,145 @@ use crate::drawing_utils::{
 };
 use crate::layout::TableLayout;
 use crate::style::{Alignment, BorderStyle, Color, VerticalAlignment};
-use crate::table::Table;
+use crate::table::{CellImage, Table};
 use lopdf::{
     Document, Object, ObjectId, StringFormat,
     content::{Content, Operation},
     dictionary,
 };
+use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, trace};
+
+/// Tracks image XObjects registered in a document for a table draw operation.
+pub(crate) struct ImageXObjects {
+    /// Maps Arc raw pointer → (resource_name, ObjectId)
+    entries: HashMap<*const lopdf::Stream, (String, ObjectId)>,
+    counter: usize,
+}
+
+impl ImageXObjects {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            counter: 0,
+        }
+    }
+
+    /// Register an image in the document if not already registered.
+    /// Returns the resource name to reference it with `Do`.
+    fn register(&mut self, doc: &mut Document, image: &CellImage) -> String {
+        let ptr = Arc::as_ptr(&image.xobject);
+        if let Some((name, _)) = self.entries.get(&ptr) {
+            return name.clone();
+        }
+        let name = format!("TblImg{}", self.counter);
+        self.counter += 1;
+        let obj_id = doc.add_object((*image.xobject).clone());
+        self.entries.insert(ptr, (name.clone(), obj_id));
+        name
+    }
+
+    /// Register all image XObjects into a page's Resources/XObject dictionary.
+    pub(crate) fn register_on_page(&self, doc: &mut Document, page_id: ObjectId) -> Result<()> {
+        for (_, (name, obj_id)) in &self.entries {
+            doc.add_xobject(page_id, name.as_bytes().to_vec(), *obj_id)
+                .map_err(|e| {
+                    crate::error::TableError::DrawingError(format!(
+                        "Failed to register image XObject: {e}"
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+}
+
+/// Generate PDF objects for drawing an image within a cell.
+/// Returns (q ... cm ... Do ... Q) clipped to the cell bounds.
+fn draw_cell_image(
+    image: &CellImage,
+    resource_name: &str,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    padding: &crate::style::Padding,
+) -> Vec<Object> {
+    let available_w = width - padding.left - padding.right;
+    let available_h = height - padding.top - padding.bottom;
+    if available_w <= 0.0 || available_h <= 0.0 || image.width_px == 0 || image.height_px == 0 {
+        return Vec::new();
+    }
+
+    let aspect = image.aspect_ratio();
+
+    // Contain-fit: scale to fit, capped by max_render_height_pts
+    let mut render_h = available_w / aspect;
+    if let Some(max_h) = image.max_render_height_pts {
+        render_h = render_h.min(max_h);
+    }
+    render_h = render_h.min(available_h);
+    let render_w = render_h * aspect;
+    // If render_w exceeds available_w, scale back
+    let (render_w, render_h) = if render_w > available_w {
+        (available_w, available_w / aspect)
+    } else {
+        (render_w, render_h)
+    };
+
+    // Center within the cell's inner box
+    let inner_x = x + padding.left;
+    let inner_y_bottom = y - height + padding.bottom;
+    let img_x = inner_x + (available_w - render_w) / 2.0;
+    let img_y = inner_y_bottom + (available_h - render_h) / 2.0;
+
+    vec![
+        // Save graphics state
+        Object::Name(b"q".to_vec()),
+        // Clipping path to cell bounds
+        Object::Name(b"re".to_vec()),
+        x.into(),
+        (y - height).into(),
+        width.into(),
+        height.into(),
+        Object::Name(b"W".to_vec()),
+        Object::Name(b"n".to_vec()),
+        // Transformation matrix: scale and position the image
+        Object::Name(b"cm".to_vec()),
+        render_w.into(),
+        0.0f32.into(),
+        0.0f32.into(),
+        render_h.into(),
+        img_x.into(),
+        img_y.into(),
+        // Render the XObject
+        Object::Name(b"Do".to_vec()),
+        Object::Name(resource_name.as_bytes().to_vec()),
+        // Restore graphics state
+        Object::Name(b"Q".to_vec()),
+    ]
+}
+
+/// Check whether a table contains any image cells.
+pub(crate) fn table_has_images(table: &Table) -> bool {
+    table
+        .rows
+        .iter()
+        .any(|row| row.cells.iter().any(|cell| cell.image.is_some()))
+}
+
+/// Pre-register all unique images from a table into the document.
+pub(crate) fn register_all_images(doc: &mut Document, table: &Table) -> ImageXObjects {
+    let mut registry = ImageXObjects::new();
+    for row in &table.rows {
+        for cell in &row.cells {
+            if let Some(ref image) = cell.image {
+                registry.register(doc, image);
+            }
+        }
+    }
+    registry
+}
 
 fn wrap_objects_as_artifact(mut objects: Vec<Object>) -> Vec<Object> {
     if objects.is_empty() {
@@ -99,12 +231,16 @@ fn draw_cell_border_overrides(
     ops
 }
 
-/// Generate PDF operations for drawing a table
+/// Generate PDF operations for drawing a table.
+///
+/// When `image_registry` is provided, image cells are rendered using the
+/// pre-registered XObject resource names. Pass `None` for text-only tables.
 pub fn generate_table_operations(
     table: &Table,
     layout: &TableLayout,
     position: (f32, f32),
     mut hook: Option<&mut dyn TaggedCellHook>,
+    image_registry: Option<&ImageXObjects>,
 ) -> Result<Vec<Object>> {
     let mut operations = Vec::new();
     let mut cell_border_overlay_ops = Vec::new();
@@ -190,6 +326,20 @@ pub fn generate_table_operations(
             operations.extend(draw_cell_text(
                 cell, table, current_x, current_y, cell_width, row_height,
             )?);
+
+            // Draw cell image if present
+            if let (Some(image), Some(registry)) = (&cell.image, image_registry) {
+                let padding = cell
+                    .style
+                    .as_ref()
+                    .and_then(|s| s.padding.as_ref())
+                    .unwrap_or(&table.style.padding);
+                if let Some((name, _)) = registry.entries.get(&Arc::as_ptr(&image.xobject)) {
+                    operations.extend(draw_cell_image(
+                        image, name, current_x, current_y, cell_width, row_height, padding,
+                    ));
+                }
+            }
 
             if let Some(cell_hook) = hook.as_deref_mut() {
                 operations.extend(operations_to_objects(
@@ -556,6 +706,7 @@ pub fn draw_table_paginated(
     layout: &TableLayout,
     position: (f32, f32),
     mut hook: Option<&mut dyn TaggedCellHook>,
+    image_registry: Option<&ImageXObjects>,
 ) -> Result<PagedTableResult> {
     debug!(
         "Drawing paginated table with {} rows, {} header rows",
@@ -600,6 +751,7 @@ pub fn draw_table_paginated(
                     },
                 ),
                 &mut hook,
+                image_registry,
             )?;
 
             // Create new page
@@ -641,6 +793,7 @@ pub fn draw_table_paginated(
             &rows_on_current_page,
             (start_x, page_y),
             &mut hook,
+            image_registry,
         )?;
     }
 
@@ -727,6 +880,7 @@ fn draw_rows_subset(
     row_indices: &[usize],
     position: (f32, f32),
     hook: &mut Option<&mut dyn TaggedCellHook>,
+    image_registry: Option<&ImageXObjects>,
 ) -> Result<()> {
     if row_indices.is_empty() {
         return Ok(());
@@ -821,6 +975,20 @@ fn draw_rows_subset(
                 cell, table, current_x, current_y, cell_width, row_height,
             )?);
 
+            // Draw cell image if present
+            if let (Some(image), Some(registry)) = (&cell.image, image_registry) {
+                let padding = cell
+                    .style
+                    .as_ref()
+                    .and_then(|s| s.padding.as_ref())
+                    .unwrap_or(&table.style.padding);
+                if let Some((name, _)) = registry.entries.get(&Arc::as_ptr(&image.xobject)) {
+                    operations.extend(draw_cell_image(
+                        image, name, current_x, current_y, cell_width, row_height, padding,
+                    ));
+                }
+            }
+
             if let Some(cell_hook) = hook.as_deref_mut() {
                 operations.extend(operations_to_objects(
                     cell_hook.end_cell(row_idx, col_idx, is_header),
@@ -854,6 +1022,11 @@ fn draw_rows_subset(
         operations.extend(border_ops);
     }
     operations.extend(cell_border_overlay_ops);
+
+    // Register image XObjects on this page
+    if let Some(registry) = image_registry {
+        registry.register_on_page(doc, page_id)?;
+    }
 
     // Add operations to page
     add_operations_to_page(doc, page_id, operations)?;

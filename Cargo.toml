@@ -14,10 +14,11 @@ default = ["ttf-parser"]
 ttf-parser = ["dep:ttf-parser"]
 
 [dependencies]
-lopdf = "0.39"
+lopdf = { version = "0.39", features = ["embed_image"] }
 tracing = "0.1"
 thiserror = "2.0"
 ttf-parser = { version = "0.25", optional = true }
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

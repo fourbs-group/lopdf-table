@@ -1,10 +1,115 @@
 //! Core table structures
 
 use crate::Result;
+use crate::error::TableError;
 use crate::font::FontMetrics;
 use crate::style::{CellStyle, RowStyle, TableStyle};
 use std::sync::Arc;
 use tracing::trace;
+
+/// Image fit mode for cell rendering
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ImageFit {
+    /// Scale to fit within cell bounds preserving aspect ratio
+    #[default]
+    Contain,
+}
+
+/// Image payload for embedding in a table cell.
+///
+/// Constructed from raw JPEG or PNG bytes. The image is validated and
+/// converted to a PDF XObject stream at construction time. Cheap to
+/// clone via internal `Arc`.
+#[derive(Clone)]
+pub struct CellImage {
+    /// Pre-built XObject stream ready for PDF embedding
+    pub(crate) xobject: Arc<lopdf::Stream>,
+    /// Intrinsic width in pixels
+    pub(crate) width_px: u32,
+    /// Intrinsic height in pixels
+    pub(crate) height_px: u32,
+    /// Maximum rendered height in points (caps row height contribution)
+    pub(crate) max_render_height_pts: Option<f32>,
+    /// Fit mode
+    pub(crate) fit: ImageFit,
+}
+
+impl std::fmt::Debug for CellImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CellImage")
+            .field("width_px", &self.width_px)
+            .field("height_px", &self.height_px)
+            .field("max_render_height_pts", &self.max_render_height_pts)
+            .field("fit", &self.fit)
+            .finish()
+    }
+}
+
+impl CellImage {
+    /// Create a new image from raw JPEG or PNG bytes.
+    ///
+    /// Validates the image and pre-builds the PDF XObject stream.
+    /// Returns an error if the bytes are not a valid/supported image.
+    pub fn new(data: Vec<u8>) -> Result<Self> {
+        let stream = lopdf::xobject::image_from(data)
+            .map_err(|e| TableError::DrawingError(format!("Invalid image data: {e}")))?;
+
+        let width_px = stream
+            .dict
+            .get(b"Width")
+            .ok()
+            .and_then(|o| match o {
+                lopdf::Object::Integer(v) => Some(*v as u32),
+                _ => None,
+            })
+            .ok_or_else(|| TableError::DrawingError("Missing image Width".into()))?;
+
+        let height_px = stream
+            .dict
+            .get(b"Height")
+            .ok()
+            .and_then(|o| match o {
+                lopdf::Object::Integer(v) => Some(*v as u32),
+                _ => None,
+            })
+            .ok_or_else(|| TableError::DrawingError("Missing image Height".into()))?;
+
+        Ok(Self {
+            xobject: Arc::new(stream),
+            width_px,
+            height_px,
+            max_render_height_pts: None,
+            fit: ImageFit::default(),
+        })
+    }
+
+    /// Set maximum rendered height in points.
+    pub fn with_max_height(mut self, pts: f32) -> Self {
+        self.max_render_height_pts = Some(pts);
+        self
+    }
+
+    /// Set the image fit mode.
+    pub fn with_fit(mut self, fit: ImageFit) -> Self {
+        self.fit = fit;
+        self
+    }
+
+    /// Intrinsic pixel width.
+    pub fn width_px(&self) -> u32 {
+        self.width_px
+    }
+
+    /// Intrinsic pixel height.
+    pub fn height_px(&self) -> u32 {
+        self.height_px
+    }
+
+    /// Aspect ratio (width / height).
+    pub fn aspect_ratio(&self) -> f32 {
+        self.width_px as f32 / self.height_px as f32
+    }
+}
 
 /// Column width specification
 #[derive(Debug, Clone)]
@@ -239,6 +344,8 @@ pub struct Cell {
     pub rowspan: usize,
     /// Enable text wrapping for this cell
     pub text_wrap: bool,
+    /// Optional image payload for this cell
+    pub image: Option<CellImage>,
 }
 
 impl Cell {
@@ -250,12 +357,31 @@ impl Cell {
             colspan: 1,
             rowspan: 1,
             text_wrap: false,
+            image: None,
         }
     }
 
     /// Create an empty cell
     pub fn empty() -> Self {
         Self::new("")
+    }
+
+    /// Create a cell containing an image (with empty text).
+    pub fn from_image(image: CellImage) -> Self {
+        Self {
+            content: String::new(),
+            style: None,
+            colspan: 1,
+            rowspan: 1,
+            text_wrap: false,
+            image: Some(image),
+        }
+    }
+
+    /// Set image payload for this cell.
+    pub fn with_image(mut self, image: CellImage) -> Self {
+        self.image = Some(image);
+        self
     }
 
     /// Enable text wrapping for this cell

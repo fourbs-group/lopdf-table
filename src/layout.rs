@@ -233,6 +233,21 @@ fn calculate_column_widths(table: &Table) -> Result<Vec<f32>> {
     Ok(max_widths)
 }
 
+/// Compute image-driven content height for a cell with an image using contain-fit.
+fn image_content_height(image: &crate::table::CellImage, available_width: f32) -> f32 {
+    if image.width_px == 0 || image.height_px == 0 {
+        return 0.0;
+    }
+    let aspect = image.aspect_ratio();
+    // Contain: scale to fit available width, preserving aspect ratio
+    let mut height = available_width / aspect;
+    // Cap at max_render_height_pts if set
+    if let Some(max_h) = image.max_render_height_pts {
+        height = height.min(max_h);
+    }
+    height
+}
+
 /// Calculate row heights based on content
 fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32>> {
     let mut heights = Vec::with_capacity(table.rows.len());
@@ -249,18 +264,23 @@ fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32
                     break;
                 }
 
+                let padding = cell
+                    .style
+                    .as_ref()
+                    .and_then(|s| s.padding.as_ref())
+                    .unwrap_or(&table.style.padding);
+
                 let font_size = cell
                     .style
                     .as_ref()
                     .and_then(|s| s.font_size)
                     .unwrap_or(table.style.default_font_size);
 
-                // Calculate available width for text
-                let available_width =
-                    column_widths[i] - table.style.padding.left - table.style.padding.right;
+                // Calculate available width for content
+                let available_width = column_widths[i] - padding.left - padding.right;
 
-                // Calculate height based on whether text wrapping is enabled
-                let estimated_height = if cell.text_wrap {
+                // Text-driven height
+                let text_height = if cell.text_wrap {
                     if let Some(metrics) = metrics_for_cell(table, cell) {
                         crate::text::calculate_wrapped_text_height_with_metrics(
                             &cell.content,
@@ -277,12 +297,20 @@ fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32
                             DEFAULT_LINE_HEIGHT_MULTIPLIER,
                         )
                     }
-                } else {
-                    // Single line height
+                } else if !cell.content.is_empty() {
                     font_size_to_height(font_size)
+                } else {
+                    0.0
                 };
 
-                max_height = f32::max(max_height, estimated_height);
+                // Image-driven height
+                let img_height = cell
+                    .image
+                    .as_ref()
+                    .map(|img| image_content_height(img, available_width))
+                    .unwrap_or(0.0);
+
+                max_height = f32::max(max_height, f32::max(text_height, img_height));
             }
 
             // Add padding

@@ -27,7 +27,7 @@ pub use font::TtfFontMetrics;
 pub use style::{
     Alignment, BorderStyle, CellStyle, Color, RowStyle, TableStyle, VerticalAlignment,
 };
-pub use table::{Cell, ColumnWidth, Row, Table};
+pub use table::{Cell, CellImage, ColumnWidth, ImageFit, Row, Table};
 
 /// Optional hook for injecting tagged content around table cells.
 pub trait TaggedCellHook {
@@ -117,14 +117,27 @@ impl TableDrawing for Document {
     fn draw_table(&mut self, page_id: ObjectId, table: Table, position: (f32, f32)) -> Result<()> {
         debug!("Drawing table at position {:?}", position);
 
-        // Calculate layout
         let layout = layout::calculate_layout(&table)?;
         trace!("Calculated layout: {:?}", layout);
 
-        // Generate drawing operations
-        let operations = drawing::generate_table_operations(&table, &layout, position, None)?;
+        let image_reg = if drawing::table_has_images(&table) {
+            Some(drawing::register_all_images(self, &table))
+        } else {
+            None
+        };
 
-        // Add content to page
+        let operations = drawing::generate_table_operations(
+            &table,
+            &layout,
+            position,
+            None,
+            image_reg.as_ref(),
+        )?;
+
+        if let Some(ref reg) = image_reg {
+            reg.register_on_page(self, page_id)?;
+        }
+
         drawing::add_operations_to_page(self, page_id, operations)?;
 
         Ok(())
@@ -132,14 +145,18 @@ impl TableDrawing for Document {
 
     #[instrument(skip(self, table))]
     fn add_table_to_page(&mut self, page_id: ObjectId, table: Table) -> Result<()> {
-        // For now, default to top-left with some margin
         let position = (DEFAULT_MARGIN, A4_HEIGHT - DEFAULT_MARGIN - 50.0);
         self.draw_table(page_id, table, position)
     }
 
     fn create_table_content(&self, table: &Table, position: (f32, f32)) -> Result<Vec<Object>> {
+        if drawing::table_has_images(table) {
+            return Err(TableError::DrawingError(
+                "Image cells require document-backed drawing (use draw_table or draw_table_with_pagination instead)".to_string(),
+            ));
+        }
         let layout = layout::calculate_layout(table)?;
-        drawing::generate_table_operations(table, &layout, position, None)
+        drawing::generate_table_operations(table, &layout, position, None, None)
     }
 
     #[instrument(skip(self, table), fields(table_rows = table.rows.len()))]
@@ -151,12 +168,26 @@ impl TableDrawing for Document {
     ) -> Result<PagedTableResult> {
         debug!("Drawing paginated table at position {:?}", position);
 
-        // Calculate layout
         let layout = layout::calculate_layout(&table)?;
         trace!("Calculated layout: {:?}", layout);
 
-        // Generate paginated drawing operations
-        let result = drawing::draw_table_paginated(self, page_id, &table, &layout, position, None)?;
+        let image_reg = if drawing::table_has_images(&table) {
+            let reg = drawing::register_all_images(self, &table);
+            reg.register_on_page(self, page_id)?;
+            Some(reg)
+        } else {
+            None
+        };
+
+        let result = drawing::draw_table_paginated(
+            self,
+            page_id,
+            &table,
+            &layout,
+            position,
+            None,
+            image_reg.as_ref(),
+        )?;
 
         Ok(result)
     }
@@ -170,7 +201,25 @@ impl TableDrawing for Document {
     ) -> Result<()> {
         debug!("Drawing table with hook at position {:?}", position);
         let layout = layout::calculate_layout(&table)?;
-        let operations = drawing::generate_table_operations(&table, &layout, position, hook)?;
+
+        let image_reg = if drawing::table_has_images(&table) {
+            Some(drawing::register_all_images(self, &table))
+        } else {
+            None
+        };
+
+        let operations = drawing::generate_table_operations(
+            &table,
+            &layout,
+            position,
+            hook,
+            image_reg.as_ref(),
+        )?;
+
+        if let Some(ref reg) = image_reg {
+            reg.register_on_page(self, page_id)?;
+        }
+
         drawing::add_operations_to_page(self, page_id, operations)?;
         Ok(())
     }
@@ -187,7 +236,24 @@ impl TableDrawing for Document {
             position
         );
         let layout = layout::calculate_layout(&table)?;
-        drawing::draw_table_paginated(self, page_id, &table, &layout, position, hook)
+
+        let image_reg = if drawing::table_has_images(&table) {
+            let reg = drawing::register_all_images(self, &table);
+            reg.register_on_page(self, page_id)?;
+            Some(reg)
+        } else {
+            None
+        };
+
+        drawing::draw_table_paginated(
+            self,
+            page_id,
+            &table,
+            &layout,
+            position,
+            hook,
+            image_reg.as_ref(),
+        )
     }
 }
 
@@ -990,6 +1056,180 @@ mod tests {
         assert!(
             has_stroke_style(&second_page_ops, header_border_color, header_border_width),
             "expected repeated header border override stroke ops on continuation page"
+        );
+    }
+
+    /// Generate a minimal valid 2x2 red JPEG image for testing.
+    fn tiny_jpeg_bytes() -> Vec<u8> {
+        use image::{ImageBuffer, Rgb};
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(2, 2, |_, _| Rgb([255, 0, 0]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Jpeg)
+            .expect("JPEG encoding should succeed");
+        buf.into_inner()
+    }
+
+    /// Generate a minimal valid 4x3 PNG image for testing.
+    fn tiny_png_bytes() -> Vec<u8> {
+        use image::{ImageBuffer, Rgb};
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(4, 3, |_, _| Rgb([0, 128, 255]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png)
+            .expect("PNG encoding should succeed");
+        buf.into_inner()
+    }
+
+    fn make_test_doc() -> (Document, ObjectId) {
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![],
+            "Count" => 0,
+        });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        if let Ok(Object::Dictionary(pages)) = doc.get_object_mut(pages_id) {
+            if let Ok(Object::Array(kids)) = pages.get_mut(b"Kids") {
+                kids.push(page_id.into());
+            }
+            pages.set("Count", Object::Integer(1));
+        }
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+            page.set("Resources", resources_id);
+        }
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+        (doc, page_id)
+    }
+
+    #[test]
+    fn test_cell_image_jpeg_construction() {
+        let img = CellImage::new(tiny_jpeg_bytes()).expect("JPEG should parse");
+        assert_eq!(img.width_px(), 2);
+        assert_eq!(img.height_px(), 2);
+    }
+
+    #[test]
+    fn test_cell_image_png_construction() {
+        let img = CellImage::new(tiny_png_bytes()).expect("PNG should parse");
+        assert_eq!(img.width_px(), 4);
+        assert_eq!(img.height_px(), 3);
+    }
+
+    #[test]
+    fn test_cell_image_invalid_bytes() {
+        let result = CellImage::new(vec![0, 1, 2, 3]);
+        assert!(result.is_err(), "invalid bytes should produce an error");
+    }
+
+    #[test]
+    fn test_image_cell_draw_emits_do_and_cm() {
+        let (mut doc, page_id) = make_test_doc();
+        let img = CellImage::new(tiny_jpeg_bytes())
+            .unwrap()
+            .with_max_height(120.0);
+
+        let table = Table::new()
+            .with_pixel_widths(vec![200.0])
+            .add_row(Row::new(vec![Cell::from_image(img)]));
+
+        doc.draw_table(page_id, table, (50.0, 750.0))
+            .expect("image table draw should succeed");
+
+        let ops = page_content_operations(&doc, page_id);
+        let has_cm = ops.iter().any(|op| op.operator == "cm");
+        let has_do = ops.iter().any(|op| op.operator == "Do");
+        assert!(has_cm, "expected cm operator for image transform");
+        assert!(has_do, "expected Do operator for image rendering");
+    }
+
+    #[test]
+    fn test_create_table_content_rejects_image_cells() {
+        let img = CellImage::new(tiny_jpeg_bytes()).unwrap();
+        let table = Table::new()
+            .with_pixel_widths(vec![200.0])
+            .add_row(Row::new(vec![Cell::from_image(img)]));
+
+        let result = Document::with_version("1.7").create_table_content(&table, (50.0, 750.0));
+        assert!(
+            result.is_err(),
+            "create_table_content should reject image cells"
+        );
+    }
+
+    #[test]
+    fn test_text_only_tables_still_work_with_image_support() {
+        let (mut doc, page_id) = make_test_doc();
+        let table = Table::new()
+            .add_row(Row::new(vec![Cell::new("A"), Cell::new("B")]))
+            .add_row(Row::new(vec![Cell::new("C"), Cell::new("D")]))
+            .with_border(1.0);
+
+        doc.draw_table(page_id, table, (50.0, 750.0))
+            .expect("text-only table should still work");
+    }
+
+    #[test]
+    fn test_paginated_image_table_renders_on_continuation_pages() {
+        const PAGE_HEIGHT: f32 = 842.0;
+        const TOP_MARGIN: f32 = 50.0;
+        const BOTTOM_MARGIN: f32 = 50.0;
+
+        let (mut doc, page_id) = make_test_doc();
+        let jpeg = tiny_jpeg_bytes();
+
+        let mut style = TableStyle::default();
+        style.page_height = Some(PAGE_HEIGHT);
+        style.top_margin = TOP_MARGIN;
+        style.bottom_margin = BOTTOM_MARGIN;
+        style.repeat_headers = true;
+
+        let mut table = Table::new()
+            .with_style(style)
+            .with_header_rows(1)
+            .with_pixel_widths(vec![100.0, 200.0])
+            .add_row(Row::new(vec![
+                Cell::new("Header").bold(),
+                Cell::new("Photo").bold(),
+            ]));
+
+        for _ in 0..30 {
+            let img = CellImage::new(jpeg.clone()).unwrap().with_max_height(80.0);
+            table = table.add_row(Row::new(vec![Cell::new("data"), Cell::from_image(img)]));
+        }
+
+        let result = doc
+            .draw_table_with_pagination(page_id, table, (50.0, 500.0))
+            .expect("paginated image table should succeed");
+
+        assert!(
+            result.page_ids.len() >= 2,
+            "expected at least 2 pages, got {}",
+            result.page_ids.len()
+        );
+
+        // Verify continuation page has Do operator for images
+        let second_page_ops = page_content_operations(&doc, result.page_ids[1]);
+        let has_do = second_page_ops.iter().any(|op| op.operator == "Do");
+        assert!(
+            has_do,
+            "expected Do operator on continuation page for image rendering"
         );
     }
 }
