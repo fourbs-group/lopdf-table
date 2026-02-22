@@ -21,11 +21,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, trace};
 
+/// Resource name for the overlay transparency graphics state.
+const OVERLAY_GSTATE_NAME: &str = "GSTblOvl";
+
 /// Tracks image XObjects registered in a document for a table draw operation.
 pub(crate) struct ImageXObjects {
     /// Maps Arc raw pointer → (resource_name, ObjectId)
     entries: HashMap<*const lopdf::Stream, (String, ObjectId)>,
     counter: usize,
+    /// ExtGState ObjectId for overlay transparency (created on demand).
+    gstate_id: Option<ObjectId>,
 }
 
 impl ImageXObjects {
@@ -33,6 +38,7 @@ impl ImageXObjects {
         Self {
             entries: HashMap::new(),
             counter: 0,
+            gstate_id: None,
         }
     }
 
@@ -50,7 +56,60 @@ impl ImageXObjects {
         name
     }
 
-    /// Register all image XObjects into a page's Resources/XObject dictionary.
+    /// Ensure an ExtGState for 50% opacity overlays exists in the document.
+    fn ensure_gstate(&mut self, doc: &mut Document) {
+        if self.gstate_id.is_some() {
+            return;
+        }
+        let gs_dict = dictionary! {
+            "Type" => "ExtGState",
+            "ca" => Object::Real(0.5),
+            "CA" => Object::Real(0.5),
+        };
+        self.gstate_id = Some(doc.add_object(gs_dict));
+    }
+
+    /// Register the ExtGState into a page's Resources/ExtGState dictionary.
+    fn register_gstate_on_page(&self, doc: &mut Document, page_id: ObjectId) -> Result<()> {
+        let gstate_obj_id = match self.gstate_id {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+
+        // Get the Resources dictionary reference from the page
+        let resources_ref = if let Ok(Object::Dictionary(page_dict)) = doc.get_object(page_id) {
+            match page_dict.get(b"Resources") {
+                Ok(Object::Reference(r)) => Some(*r),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let resources_id = match resources_ref {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+
+        // Get or create ExtGState sub-dictionary on the Resources dictionary
+        if let Ok(Object::Dictionary(res_dict)) = doc.get_object_mut(resources_id) {
+            match res_dict.get_mut(b"ExtGState") {
+                Ok(Object::Dictionary(gs_dict)) => {
+                    gs_dict.set(OVERLAY_GSTATE_NAME, gstate_obj_id);
+                }
+                _ => {
+                    let gs_sub = dictionary! {
+                        OVERLAY_GSTATE_NAME => gstate_obj_id,
+                    };
+                    res_dict.set("ExtGState", gs_sub);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Register all image XObjects (and ExtGState if needed) into a page's Resources.
     pub(crate) fn register_on_page(&self, doc: &mut Document, page_id: ObjectId) -> Result<()> {
         for (_, (name, obj_id)) in &self.entries {
             doc.add_xobject(page_id, name.as_bytes().to_vec(), *obj_id)
@@ -60,12 +119,72 @@ impl ImageXObjects {
                     ))
                 })?;
         }
+        self.register_gstate_on_page(doc, page_id)?;
         Ok(())
     }
 }
 
-/// Generate PDF objects for drawing an image within a cell.
-/// Returns (q ... cm ... Do ... Q) clipped to the cell bounds.
+/// Calculated image render bounds within a cell.
+struct ImageRenderBounds {
+    img_x: f32,
+    img_y: f32,
+    render_w: f32,
+    render_h: f32,
+}
+
+/// Calculate contain-fit image bounds within a cell.
+fn calculate_image_render_bounds(
+    image: &CellImage,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    padding: &crate::style::Padding,
+) -> Option<ImageRenderBounds> {
+    let available_w = width - padding.left - padding.right;
+    let available_h = height - padding.top - padding.bottom;
+    if available_w <= 0.0 || available_h <= 0.0 || image.width_px == 0 || image.height_px == 0 {
+        return None;
+    }
+
+    let aspect = image.aspect_ratio();
+
+    let mut render_h = available_w / aspect;
+    if let Some(max_h) = image.max_render_height_pts {
+        render_h = render_h.min(max_h);
+    }
+    render_h = render_h.min(available_h);
+    let render_w = render_h * aspect;
+    let (render_w, render_h) = if render_w > available_w {
+        (available_w, available_w / aspect)
+    } else {
+        (render_w, render_h)
+    };
+
+    let inner_x = x + padding.left;
+    let inner_y_bottom = y - height + padding.bottom;
+    let img_x = inner_x + (available_w - render_w) / 2.0;
+    let img_y = inner_y_bottom + (available_h - render_h) / 2.0;
+
+    Some(ImageRenderBounds {
+        img_x,
+        img_y,
+        render_w,
+        render_h,
+    })
+}
+
+/// Resolve the regular (non-bold) font resource name for overlay text.
+fn resolve_overlay_font_resource_name(table: &Table) -> String {
+    if let Some(ref name) = table.style.embedded_font_resource_name {
+        name.clone()
+    } else {
+        "F1".to_string()
+    }
+}
+
+/// Generate PDF objects for drawing an image within a cell,
+/// optionally including a text overlay bar.
 fn draw_cell_image(
     image: &CellImage,
     resource_name: &str,
@@ -74,39 +193,16 @@ fn draw_cell_image(
     width: f32,
     height: f32,
     padding: &crate::style::Padding,
+    table: &Table,
+    has_gstate: bool,
 ) -> Vec<Object> {
-    let available_w = width - padding.left - padding.right;
-    let available_h = height - padding.top - padding.bottom;
-    if available_w <= 0.0 || available_h <= 0.0 || image.width_px == 0 || image.height_px == 0 {
-        return Vec::new();
-    }
-
-    let aspect = image.aspect_ratio();
-
-    // Contain-fit: scale to fit, capped by max_render_height_pts
-    let mut render_h = available_w / aspect;
-    if let Some(max_h) = image.max_render_height_pts {
-        render_h = render_h.min(max_h);
-    }
-    render_h = render_h.min(available_h);
-    let render_w = render_h * aspect;
-    // If render_w exceeds available_w, scale back
-    let (render_w, render_h) = if render_w > available_w {
-        (available_w, available_w / aspect)
-    } else {
-        (render_w, render_h)
+    let bounds = match calculate_image_render_bounds(image, x, y, width, height, padding) {
+        Some(b) => b,
+        None => return Vec::new(),
     };
 
-    // Center within the cell's inner box
-    let inner_x = x + padding.left;
-    let inner_y_bottom = y - height + padding.bottom;
-    let img_x = inner_x + (available_w - render_w) / 2.0;
-    let img_y = inner_y_bottom + (available_h - render_h) / 2.0;
-
-    vec![
-        // Save graphics state
+    let mut objects = vec![
         Object::Name(b"q".to_vec()),
-        // Clipping path to cell bounds
         Object::Name(b"re".to_vec()),
         x.into(),
         (y - height).into(),
@@ -114,20 +210,94 @@ fn draw_cell_image(
         height.into(),
         Object::Name(b"W".to_vec()),
         Object::Name(b"n".to_vec()),
-        // Transformation matrix: scale and position the image
         Object::Name(b"cm".to_vec()),
-        render_w.into(),
+        bounds.render_w.into(),
         0.0f32.into(),
         0.0f32.into(),
-        render_h.into(),
-        img_x.into(),
-        img_y.into(),
-        // Render the XObject
+        bounds.render_h.into(),
+        bounds.img_x.into(),
+        bounds.img_y.into(),
         Object::Name(b"Do".to_vec()),
         Object::Name(resource_name.as_bytes().to_vec()),
-        // Restore graphics state
         Object::Name(b"Q".to_vec()),
-    ]
+    ];
+
+    // Draw overlay bar if present
+    if let (Some(overlay), true) = (&image.overlay, has_gstate) {
+        if !overlay.text.is_empty() {
+            objects.extend(draw_image_overlay(overlay, &bounds, table));
+        }
+    }
+
+    objects
+}
+
+/// Generate PDF objects for a semi-transparent overlay bar with white text
+/// at the top of an image.
+fn draw_image_overlay(
+    overlay: &crate::table::ImageOverlay,
+    bounds: &ImageRenderBounds,
+    table: &Table,
+) -> Vec<Object> {
+    let bar_w = bounds.render_w;
+    let bar_h = overlay.bar_height.min(bounds.render_h);
+    let bar_x = bounds.img_x;
+    let bar_y = bounds.img_y + bounds.render_h - bar_h;
+
+    let font_name = resolve_overlay_font_resource_name(table);
+    let use_encoded =
+        table.style.embedded_font_resource_name.is_some() && table.font_metrics.is_some();
+
+    let text_x = bar_x + overlay.padding;
+    let baseline_y = bar_y + bar_h - overlay.font_size - (bar_h - overlay.font_size) / 2.0;
+
+    let mut objects = Vec::new();
+
+    // Semi-transparent black bar
+    objects.push(Object::Name(b"q".to_vec()));
+    objects.push(Object::Name(b"gs".to_vec()));
+    objects.push(Object::Name(OVERLAY_GSTATE_NAME.as_bytes().to_vec()));
+    objects.push(Object::Name(b"rg".to_vec()));
+    objects.push(0.0f32.into());
+    objects.push(0.0f32.into());
+    objects.push(0.0f32.into());
+    objects.push(Object::Name(b"re".to_vec()));
+    objects.push(bar_x.into());
+    objects.push(bar_y.into());
+    objects.push(bar_w.into());
+    objects.push(bar_h.into());
+    objects.push(Object::Name(b"f".to_vec()));
+    objects.push(Object::Name(b"Q".to_vec()));
+
+    // White text (full opacity, outside the gs scope)
+    objects.push(Object::Name(b"BT".to_vec()));
+    objects.push(Object::Name(b"rg".to_vec()));
+    objects.push(1.0f32.into());
+    objects.push(1.0f32.into());
+    objects.push(1.0f32.into());
+    objects.push(Object::Name(b"Tf".to_vec()));
+    objects.push(Object::Name(font_name.as_bytes().to_vec()));
+    objects.push(overlay.font_size.into());
+    objects.push(Object::Name(b"Td".to_vec()));
+    objects.push(text_x.into());
+    objects.push(baseline_y.into());
+
+    if use_encoded {
+        let encoded = table
+            .font_metrics
+            .as_ref()
+            .unwrap()
+            .encode_text(&overlay.text);
+        objects.push(Object::Name(b"Tj".to_vec()));
+        objects.push(Object::String(encoded, StringFormat::Hexadecimal));
+    } else {
+        objects.push(Object::Name(b"Tj".to_vec()));
+        objects.push(Object::string_literal(overlay.text.clone()));
+    }
+
+    objects.push(Object::Name(b"ET".to_vec()));
+
+    objects
 }
 
 /// Check whether a table contains any image cells.
@@ -139,14 +309,22 @@ pub(crate) fn table_has_images(table: &Table) -> bool {
 }
 
 /// Pre-register all unique images from a table into the document.
+/// Also creates an ExtGState for overlay transparency when any image has an overlay.
 pub(crate) fn register_all_images(doc: &mut Document, table: &Table) -> ImageXObjects {
     let mut registry = ImageXObjects::new();
+    let mut has_overlay = false;
     for row in &table.rows {
         for cell in &row.cells {
             if let Some(ref image) = cell.image {
                 registry.register(doc, image);
+                if image.overlay.is_some() {
+                    has_overlay = true;
+                }
             }
         }
+    }
+    if has_overlay {
+        registry.ensure_gstate(doc);
     }
     registry
 }
@@ -336,7 +514,15 @@ pub fn generate_table_operations(
                     .unwrap_or(&table.style.padding);
                 if let Some((name, _)) = registry.entries.get(&Arc::as_ptr(&image.xobject)) {
                     operations.extend(draw_cell_image(
-                        image, name, current_x, current_y, cell_width, row_height, padding,
+                        image,
+                        name,
+                        current_x,
+                        current_y,
+                        cell_width,
+                        row_height,
+                        padding,
+                        table,
+                        registry.gstate_id.is_some(),
                     ));
                 }
             }
@@ -984,7 +1170,15 @@ fn draw_rows_subset(
                     .unwrap_or(&table.style.padding);
                 if let Some((name, _)) = registry.entries.get(&Arc::as_ptr(&image.xobject)) {
                     operations.extend(draw_cell_image(
-                        image, name, current_x, current_y, cell_width, row_height, padding,
+                        image,
+                        name,
+                        current_x,
+                        current_y,
+                        cell_width,
+                        row_height,
+                        padding,
+                        table,
+                        registry.gstate_id.is_some(),
                     ));
                 }
             }

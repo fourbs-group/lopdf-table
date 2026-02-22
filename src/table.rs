@@ -15,6 +15,31 @@ pub enum ImageFit {
     Contain,
 }
 
+/// Text overlay drawn on top of a cell image (semi-transparent bar with white text).
+#[derive(Debug, Clone)]
+pub struct ImageOverlay {
+    /// Text to display in the overlay bar
+    pub text: String,
+    /// Font size for the overlay text (default: 8.0)
+    pub font_size: f32,
+    /// Height of the semi-transparent background bar (default: 16.0)
+    pub bar_height: f32,
+    /// Horizontal padding inside the bar (default: 4.0)
+    pub padding: f32,
+}
+
+impl ImageOverlay {
+    /// Create a new overlay with the given text and sensible defaults.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            font_size: 8.0,
+            bar_height: 16.0,
+            padding: 4.0,
+        }
+    }
+}
+
 /// Image payload for embedding in a table cell.
 ///
 /// Constructed from raw JPEG or PNG bytes. The image is validated and
@@ -32,6 +57,8 @@ pub struct CellImage {
     pub(crate) max_render_height_pts: Option<f32>,
     /// Fit mode
     pub(crate) fit: ImageFit,
+    /// Optional text overlay drawn on top of the image
+    pub(crate) overlay: Option<ImageOverlay>,
 }
 
 impl std::fmt::Debug for CellImage {
@@ -41,6 +68,7 @@ impl std::fmt::Debug for CellImage {
             .field("height_px", &self.height_px)
             .field("max_render_height_pts", &self.max_render_height_pts)
             .field("fit", &self.fit)
+            .field("overlay", &self.overlay)
             .finish()
     }
 }
@@ -80,6 +108,7 @@ impl CellImage {
             height_px,
             max_render_height_pts: None,
             fit: ImageFit::default(),
+            overlay: None,
         })
     }
 
@@ -92,6 +121,12 @@ impl CellImage {
     /// Set the image fit mode.
     pub fn with_fit(mut self, fit: ImageFit) -> Self {
         self.fit = fit;
+        self
+    }
+
+    /// Attach a text overlay to this image.
+    pub fn with_overlay(mut self, overlay: ImageOverlay) -> Self {
+        self.overlay = Some(overlay);
         self
     }
 

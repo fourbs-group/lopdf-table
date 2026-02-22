@@ -27,7 +27,7 @@ pub use font::TtfFontMetrics;
 pub use style::{
     Alignment, BorderStyle, CellStyle, Color, RowStyle, TableStyle, VerticalAlignment,
 };
-pub use table::{Cell, CellImage, ColumnWidth, ImageFit, Row, Table};
+pub use table::{Cell, CellImage, ColumnWidth, ImageFit, ImageOverlay, Row, Table};
 
 /// Optional hook for injecting tagged content around table cells.
 pub trait TaggedCellHook {
@@ -1230,6 +1230,152 @@ mod tests {
         assert!(
             has_do,
             "expected Do operator on continuation page for image rendering"
+        );
+    }
+
+    #[test]
+    fn test_image_overlay_emits_gs_and_text_ops() {
+        let (mut doc, page_id) = make_test_doc();
+        let img = CellImage::new(tiny_jpeg_bytes())
+            .unwrap()
+            .with_max_height(120.0)
+            .with_overlay(table::ImageOverlay::new("01/01/2026 12:00"));
+
+        let table = Table::new()
+            .with_pixel_widths(vec![200.0])
+            .add_row(Row::new(vec![Cell::from_image(img)]));
+
+        doc.draw_table(page_id, table, (50.0, 750.0))
+            .expect("image table with overlay should succeed");
+
+        let ops = page_content_operations(&doc, page_id);
+        let has_gs = ops.iter().any(|op| op.operator == "gs");
+        let has_do = ops.iter().any(|op| op.operator == "Do");
+
+        // Overlay text should render white (rg 1 1 1) after the gs operator
+        let gs_idx = ops.iter().position(|op| op.operator == "gs").unwrap();
+        let has_white_text_after_gs = ops[gs_idx..].iter().any(|op| {
+            op.operator == "rg"
+                && op.operands.len() == 3
+                && object_to_f32(&op.operands[0]).map_or(false, |v| approx_eq(v, 1.0))
+                && object_to_f32(&op.operands[1]).map_or(false, |v| approx_eq(v, 1.0))
+                && object_to_f32(&op.operands[2]).map_or(false, |v| approx_eq(v, 1.0))
+        });
+
+        assert!(has_gs, "expected gs operator for overlay transparency");
+        assert!(has_do, "expected Do operator for image rendering");
+        assert!(
+            has_white_text_after_gs,
+            "expected white text color after gs for overlay"
+        );
+    }
+
+    #[test]
+    fn test_image_without_overlay_has_no_gs_ops() {
+        let (mut doc, page_id) = make_test_doc();
+        let img = CellImage::new(tiny_jpeg_bytes())
+            .unwrap()
+            .with_max_height(120.0);
+
+        let table = Table::new()
+            .with_pixel_widths(vec![200.0])
+            .add_row(Row::new(vec![Cell::from_image(img)]));
+
+        doc.draw_table(page_id, table, (50.0, 750.0))
+            .expect("image table without overlay should succeed");
+
+        let ops = page_content_operations(&doc, page_id);
+        let has_gs = ops.iter().any(|op| op.operator == "gs");
+        assert!(
+            !has_gs,
+            "expected no gs operator when no overlay is present"
+        );
+    }
+
+    #[test]
+    fn test_overlay_extgstate_registered_on_page() {
+        let (mut doc, page_id) = make_test_doc();
+        let img = CellImage::new(tiny_jpeg_bytes())
+            .unwrap()
+            .with_max_height(120.0)
+            .with_overlay(table::ImageOverlay::new("test date"));
+
+        let table = Table::new()
+            .with_pixel_widths(vec![200.0])
+            .add_row(Row::new(vec![Cell::from_image(img)]));
+
+        doc.draw_table(page_id, table, (50.0, 750.0))
+            .expect("overlay table draw should succeed");
+
+        // Verify the page's Resources has an ExtGState dictionary with GSTblOvl
+        let has_gstate = if let Ok(Object::Dictionary(page_dict)) = doc.get_object(page_id) {
+            if let Ok(Object::Reference(res_ref)) = page_dict.get(b"Resources") {
+                if let Ok(Object::Dictionary(res_dict)) = doc.get_object(*res_ref) {
+                    if let Ok(Object::Dictionary(gs_dict)) = res_dict.get(b"ExtGState") {
+                        gs_dict.has(b"GSTblOvl")
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        assert!(
+            has_gstate,
+            "expected GSTblOvl ExtGState to be registered in page Resources"
+        );
+    }
+
+    #[test]
+    fn test_paginated_overlay_images_register_gstate_on_all_pages() {
+        const PAGE_HEIGHT: f32 = 842.0;
+        const TOP_MARGIN: f32 = 50.0;
+        const BOTTOM_MARGIN: f32 = 50.0;
+
+        let (mut doc, page_id) = make_test_doc();
+        let jpeg = tiny_jpeg_bytes();
+
+        let mut style = TableStyle::default();
+        style.page_height = Some(PAGE_HEIGHT);
+        style.top_margin = TOP_MARGIN;
+        style.bottom_margin = BOTTOM_MARGIN;
+        style.repeat_headers = true;
+
+        let mut table = Table::new()
+            .with_style(style)
+            .with_header_rows(1)
+            .with_pixel_widths(vec![100.0, 200.0])
+            .add_row(Row::new(vec![
+                Cell::new("Header").bold(),
+                Cell::new("Photo").bold(),
+            ]));
+
+        for i in 0..30 {
+            let img = CellImage::new(jpeg.clone())
+                .unwrap()
+                .with_max_height(80.0)
+                .with_overlay(table::ImageOverlay::new(format!("date-{i}")));
+            table = table.add_row(Row::new(vec![Cell::new("data"), Cell::from_image(img)]));
+        }
+
+        let result = doc
+            .draw_table_with_pagination(page_id, table, (50.0, 500.0))
+            .expect("paginated overlay table should succeed");
+
+        assert!(result.page_ids.len() >= 2);
+
+        // Check continuation pages have gs operator
+        let second_ops = page_content_operations(&doc, result.page_ids[1]);
+        let has_gs = second_ops.iter().any(|op| op.operator == "gs");
+        assert!(
+            has_gs,
+            "expected gs operator on continuation page for overlay rendering"
         );
     }
 }

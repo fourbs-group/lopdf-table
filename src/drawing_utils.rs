@@ -15,8 +15,8 @@ pub fn is_pdf_operator(name: &str) -> bool {
         "BMC" | "BDC" | "EMC" | "MP" | "DP" | "BX" | "EX" => true,
         // Color operators
         "rg" | "RG" | "g" | "G" => true,
-        // Graphics state save/restore and clipping
-        "q" | "Q" | "W" | "W*" => true,
+        // Graphics state save/restore, clipping, and ExtGState
+        "q" | "Q" | "W" | "W*" | "gs" => true,
         // XObject and transformation operators
         "Do" | "cm" => true,
         // Path construction
