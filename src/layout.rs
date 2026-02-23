@@ -233,8 +233,8 @@ fn calculate_column_widths(table: &Table) -> Result<Vec<f32>> {
     Ok(max_widths)
 }
 
-/// Compute image-driven content height for a cell with an image using contain-fit.
-fn image_content_height(image: &crate::table::CellImage, available_width: f32) -> f32 {
+/// Compute image-driven content height for a single image using contain-fit.
+fn single_image_content_height(image: &crate::table::CellImage, available_width: f32) -> f32 {
     if image.width_px == 0 || image.height_px == 0 {
         return 0.0;
     }
@@ -246,6 +246,24 @@ fn image_content_height(image: &crate::table::CellImage, available_width: f32) -
         height = height.min(max_h);
     }
     height
+}
+
+/// Compute image-driven content height for one or more images laid out side-by-side.
+fn images_content_height(images: &[crate::table::CellImage], available_width: f32) -> f32 {
+    if images.is_empty() {
+        return 0.0;
+    }
+    if images.len() == 1 {
+        return single_image_content_height(&images[0], available_width);
+    }
+    // Multiple images share width with gaps between them
+    const IMAGE_GAP: f32 = 4.0;
+    let total_gap = IMAGE_GAP * (images.len() as f32 - 1.0);
+    let slot_w = (available_width - total_gap) / images.len() as f32;
+    images
+        .iter()
+        .map(|img| single_image_content_height(img, slot_w))
+        .fold(0.0f32, f32::max)
 }
 
 /// Calculate row heights based on content
@@ -304,11 +322,7 @@ fn calculate_row_heights(table: &Table, column_widths: &[f32]) -> Result<Vec<f32
                 };
 
                 // Image-driven height
-                let img_height = cell
-                    .image
-                    .as_ref()
-                    .map(|img| image_content_height(img, available_width))
-                    .unwrap_or(0.0);
+                let img_height = images_content_height(&cell.images, available_width);
 
                 max_height = f32::max(max_height, f32::max(text_height, img_height));
             }

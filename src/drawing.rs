@@ -232,6 +232,69 @@ fn draw_cell_image(
     objects
 }
 
+/// Render one or more images within a cell, laid out side-by-side with a small gap.
+fn draw_cell_images(
+    images: &[CellImage],
+    registry: &ImageXObjects,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    padding: &crate::style::Padding,
+    table: &Table,
+) -> Vec<Object> {
+    let count = images.len();
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let has_gstate = registry.gstate_id.is_some();
+
+    if count == 1 {
+        // Single image — use full cell width (original behaviour)
+        let image = &images[0];
+        if let Some((name, _)) = registry.entries.get(&Arc::as_ptr(&image.xobject)) {
+            return draw_cell_image(image, name, x, y, width, height, padding, table, has_gstate);
+        }
+        return Vec::new();
+    }
+
+    // Multiple images — split available width evenly with a gap between them
+    const IMAGE_GAP: f32 = 4.0;
+    let available_w = width - padding.left - padding.right;
+    let total_gap = IMAGE_GAP * (count as f32 - 1.0);
+    let slot_w = (available_w - total_gap) / count as f32;
+
+    let mut objects = Vec::new();
+    let mut slot_x = x + padding.left;
+
+    let slot_padding = crate::style::Padding {
+        top: padding.top,
+        right: 0.0,
+        bottom: padding.bottom,
+        left: 0.0,
+    };
+
+    for image in images {
+        if let Some((name, _)) = registry.entries.get(&Arc::as_ptr(&image.xobject)) {
+            objects.extend(draw_cell_image(
+                image,
+                name,
+                slot_x,
+                y,
+                slot_w,
+                height,
+                &slot_padding,
+                table,
+                has_gstate,
+            ));
+        }
+        slot_x += slot_w + IMAGE_GAP;
+    }
+
+    objects
+}
+
 /// Generate PDF objects for a semi-transparent overlay bar with white text
 /// at the top of an image.
 fn draw_image_overlay(
@@ -305,7 +368,7 @@ pub(crate) fn table_has_images(table: &Table) -> bool {
     table
         .rows
         .iter()
-        .any(|row| row.cells.iter().any(|cell| cell.image.is_some()))
+        .any(|row| row.cells.iter().any(|cell| !cell.images.is_empty()))
 }
 
 /// Pre-register all unique images from a table into the document.
@@ -315,7 +378,7 @@ pub(crate) fn register_all_images(doc: &mut Document, table: &Table) -> ImageXOb
     let mut has_overlay = false;
     for row in &table.rows {
         for cell in &row.cells {
-            if let Some(ref image) = cell.image {
+            for image in &cell.images {
                 registry.register(doc, image);
                 if image.overlay.is_some() {
                     has_overlay = true;
@@ -505,24 +568,23 @@ pub fn generate_table_operations(
                 cell, table, current_x, current_y, cell_width, row_height,
             )?);
 
-            // Draw cell image if present
-            if let (Some(image), Some(registry)) = (&cell.image, image_registry) {
-                let padding = cell
-                    .style
-                    .as_ref()
-                    .and_then(|s| s.padding.as_ref())
-                    .unwrap_or(&table.style.padding);
-                if let Some((name, _)) = registry.entries.get(&Arc::as_ptr(&image.xobject)) {
-                    operations.extend(draw_cell_image(
-                        image,
-                        name,
+            // Draw cell images if present
+            if let Some(registry) = image_registry {
+                if !cell.images.is_empty() {
+                    let padding = cell
+                        .style
+                        .as_ref()
+                        .and_then(|s| s.padding.as_ref())
+                        .unwrap_or(&table.style.padding);
+                    operations.extend(draw_cell_images(
+                        &cell.images,
+                        registry,
                         current_x,
                         current_y,
                         cell_width,
                         row_height,
                         padding,
                         table,
-                        registry.gstate_id.is_some(),
                     ));
                 }
             }
@@ -1161,24 +1223,23 @@ fn draw_rows_subset(
                 cell, table, current_x, current_y, cell_width, row_height,
             )?);
 
-            // Draw cell image if present
-            if let (Some(image), Some(registry)) = (&cell.image, image_registry) {
-                let padding = cell
-                    .style
-                    .as_ref()
-                    .and_then(|s| s.padding.as_ref())
-                    .unwrap_or(&table.style.padding);
-                if let Some((name, _)) = registry.entries.get(&Arc::as_ptr(&image.xobject)) {
-                    operations.extend(draw_cell_image(
-                        image,
-                        name,
+            // Draw cell images if present
+            if let Some(registry) = image_registry {
+                if !cell.images.is_empty() {
+                    let padding = cell
+                        .style
+                        .as_ref()
+                        .and_then(|s| s.padding.as_ref())
+                        .unwrap_or(&table.style.padding);
+                    operations.extend(draw_cell_images(
+                        &cell.images,
+                        registry,
                         current_x,
                         current_y,
                         cell_width,
                         row_height,
                         padding,
                         table,
-                        registry.gstate_id.is_some(),
                     ));
                 }
             }

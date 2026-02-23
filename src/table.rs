@@ -379,8 +379,8 @@ pub struct Cell {
     pub rowspan: usize,
     /// Enable text wrapping for this cell
     pub text_wrap: bool,
-    /// Optional image payload for this cell
-    pub image: Option<CellImage>,
+    /// Image payloads for this cell (rendered side-by-side when multiple).
+    pub images: Vec<CellImage>,
 }
 
 impl Cell {
@@ -392,7 +392,7 @@ impl Cell {
             colspan: 1,
             rowspan: 1,
             text_wrap: false,
-            image: None,
+            images: Vec::new(),
         }
     }
 
@@ -401,7 +401,7 @@ impl Cell {
         Self::new("")
     }
 
-    /// Create a cell containing an image (with empty text).
+    /// Create a cell containing a single image (with empty text).
     pub fn from_image(image: CellImage) -> Self {
         Self {
             content: String::new(),
@@ -409,13 +409,31 @@ impl Cell {
             colspan: 1,
             rowspan: 1,
             text_wrap: false,
-            image: Some(image),
+            images: vec![image],
         }
     }
 
-    /// Set image payload for this cell.
+    /// Create a cell containing multiple images rendered side-by-side (with empty text).
+    pub fn from_images(images: Vec<CellImage>) -> Self {
+        Self {
+            content: String::new(),
+            style: None,
+            colspan: 1,
+            rowspan: 1,
+            text_wrap: false,
+            images,
+        }
+    }
+
+    /// Set a single image payload for this cell (replaces any existing images).
     pub fn with_image(mut self, image: CellImage) -> Self {
-        self.image = Some(image);
+        self.images = vec![image];
+        self
+    }
+
+    /// Append an additional image to this cell.
+    pub fn add_image(mut self, image: CellImage) -> Self {
+        self.images.push(image);
         self
     }
 
